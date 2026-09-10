@@ -12,7 +12,7 @@ from json import load, loads
 from os import path
 from lxml import etree
 
-from scrapling.fetchers import StealthyFetcher
+from curl_cffi import requests
 
 carlistRouter = APIRouter(prefix="/carlist")
 htmlParser = etree.HTMLParser()
@@ -178,7 +178,7 @@ def Search(query: SearchQuery, filters: SearchFilters,
         print(f"\n[PAGE {current_page}] Fetching: {target_url}")
         
         try:
-            response = StealthyFetcher.fetch(target_url, headless=True, network_idle=True)
+            response = requests.get(target_url, headers=HEADERS, impersonate="chrome", timeout=15)
         except Exception as e:
             print(f"[FATAL NETWORK ERROR ON PAGE {current_page}]: {e}")
             if current_page == 1:
@@ -189,7 +189,7 @@ def Search(query: SearchQuery, filters: SearchFilters,
             print(f"[PAGE {current_page}] STRICT 404: Retrying without variant/body_type slug...")
             target_url = build_url(query, filters, strict=False, page_number=current_page)
             try:
-                response = StealthyFetcher.fetch(target_url, headless=True, network_idle=True)
+                response = requests.get(target_url, headers=HEADERS, impersonate="chrome", timeout=15)
             except Exception as e:
                 print(f"[FALLBACK NETWORK ERROR]: {e}")
                 pass
