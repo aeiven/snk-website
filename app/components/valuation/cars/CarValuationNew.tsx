@@ -3,11 +3,11 @@
 import { useState, useMemo, useEffect } from "react"
 import { useAuth } from "@/context/AuthContext"
 import { ArrowDown, RotateCcw } from 'lucide-react'
-import SearchableSelect from '@/app/components/ui/SearchableSelect'
-import { Button } from "../../../ui/ButtonComponent"
-import { mileageOptions, yearOptions } from "../../ranges"
-import { RegionSelection } from "../../shared/RegionSelection"
-import { MakeModelPopup } from "../../shared/MakeModelPopup"
+import SearchableSelect from '@/components/ui/SearchableSelect'
+import { Button } from "@/components/ui/ButtonComponent"
+import { mileageOptions, yearOptions } from "../ranges"
+import { RegionSelection } from "../shared/RegionSelection"
+import { MakeModelPopup } from "../shared/MakeModelPopup"
 import { scrollToElement } from "@/app/components/ui/SmoothScroll"
 
 interface CarValuationNewProps {
