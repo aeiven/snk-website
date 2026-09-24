@@ -75,7 +75,7 @@ export function CommercialValuation({ onSearch, onReset, loading, onSearchStart 
     const fetchMakes = async () => {
         setLoadingMakes(true)
         try {
-            const response = await fetch('/api/mudah/all_vehicles')
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/mudah/all_vehicles`)
             if (response.ok) {
                 const makes = await response.json()
                 setAvailableMakes(makes)
@@ -90,7 +90,7 @@ export function CommercialValuation({ onSearch, onReset, loading, onSearchStart 
     // Fetch Mudah models
     const fetchModels = async (makeSlug: string) => {
         try {
-            const response = await fetch(`/api/mudah/all_vehicles?make=${encodeURIComponent(makeSlug)}`)
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/mudah/all_vehicles?make=${encodeURIComponent(makeSlug)}`)
             if (response.ok) {
                 const models = await response.json()
                 setAvailableModels(models || {})
@@ -105,7 +105,7 @@ export function CommercialValuation({ onSearch, onReset, loading, onSearchStart 
     const fetchCarlistMakes = async () => {
         setLoadingCarlistMakes(true)
         try {
-            const response = await fetch('/api/carlist/all_vehicles')
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/carlist/all_vehicles`)
             if (response.ok) {
                 const makes = await response.json()
                 setCarlistMakes(makes)
@@ -120,7 +120,7 @@ export function CommercialValuation({ onSearch, onReset, loading, onSearchStart 
     // Fetch Carlist models
     const fetchCarlistModels = async (makeSlug: string) => {
         try {
-            const response = await fetch(`/api/carlist/all_vehicles?make=${encodeURIComponent(makeSlug)}`)
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/carlist/all_vehicles?make=${encodeURIComponent(makeSlug)}`)
             if (response.ok) {
                 const models = await response.json()
                 setCarlistModels(models || {})

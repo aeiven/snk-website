@@ -48,7 +48,7 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
     const fetchMakes = async () => {
         setLoadingMakes(true)
         try {
-            const response = await fetch('/api/mudah/all_motorcycles')
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/mudah/all_motorcycles`)
             if (response.ok) {
                 const makes = await response.json()
                 setAvailableMakes(makes)
@@ -63,7 +63,7 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
     // Fetch Mudah motorcycle models
     const fetchModels = async (makeSlug: string) => {
         try {
-            const response = await fetch(`/api/mudah/all_motorcycles?make=${encodeURIComponent(makeSlug)}`)
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/mudah/all_motorcycles?make=${encodeURIComponent(makeSlug)}`)
             if (response.ok) {
                 const models = await response.json()
                 setAvailableModels(models || {})
@@ -146,7 +146,7 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
             }
 
             // Call unified endpoint
-            const response = await fetch('/api/valuation/get_marketdata', {
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/valuation/get_marketdata`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
