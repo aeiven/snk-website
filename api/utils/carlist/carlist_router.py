@@ -2,6 +2,7 @@ import os
 import re
 import json
 import concurrent.futures
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional, Annotated
 from os import path
 
@@ -16,6 +17,7 @@ from zenrows import ZenRowsClient
 
 from api.utils import market_cache
 from api.utils.auth import require_admin
+from api.utils.db import supabase
 from api.utils.error_log import log_error
 
 load_dotenv(".env.local")
@@ -38,6 +40,10 @@ class SearchQuery(BaseModel):
     body_type: Optional[str] = None
     year: Optional[str] = None
     cc: Optional[str] = None
+    # Exact path segments taken from Carlist's own filter links (Current Market Valuation page),
+    # e.g. "1-5-e" and "body-Sedan". When set, no guessing or title matching is needed.
+    variant_slug: Optional[str] = None
+    body_slug: Optional[str] = None
 
     @field_validator('make')
     @classmethod
@@ -101,11 +107,13 @@ def build_carlist_url(query: SearchQuery, filters: SearchFilters, sort_order: st
     else:
         path_parts.append(f"{clean_model}/")
 
-    var_slug = slugify_variant(query)
+    var_slug = query.variant_slug or slugify_variant(query)
     if var_slug:
         path_parts.append(f"{var_slug}/")
 
-    if query.body_type:
+    if query.body_slug:
+        path_parts.append(f"{query.body_slug}/")
+    elif query.body_type:
         clean_body = query.body_type.replace("4D ", "").replace("2D ", "").strip().capitalize()
         path_parts.append(f"body-{clean_body}/")
 
@@ -129,32 +137,40 @@ def build_carlist_url(query: SearchQuery, filters: SearchFilters, sort_order: st
     url += "?" + "&".join(query_params)
     return url
 
-def zenrows_scrape(url: str):
-    """Returns a list of listings ([] means Carlist had none), or None if the scrape failed."""
+def fetch_page(url: str, timeout: int = 25):
+    """Fetches a Carlist page through ZenRows and returns its parsed HTML tree, or None on failure."""
     api_key = os.environ.get("ZENROWS_API_KEY")
     if not api_key:
         log_error("carlist", "config_error", "ZENROWS_API_KEY is not set")
         return None
-        
+
     client = ZenRowsClient(api_key)
     params = {
-        "js_render": "true", 
-        "antibot": "true", 
-        "premium_proxy": "true", 
+        "js_render": "true",
+        "antibot": "true",
+        "premium_proxy": "true",
         "block_resources": "image,media,font,stylesheet"
     }
-
     try:
-        response = client.get(url, params=params, timeout=25)
+        response = client.get(url, params=params, timeout=timeout)
         if response.status_code != 200:
             log_error("carlist", "scrape_failed", f"HTTP {response.status_code} for {url}")
             return None
-
         tree = etree.HTML(response.text, etree.HTMLParser())
         if tree is None:
             log_error("carlist", "scrape_failed", f"Empty page for {url}")
-            return None
+        return tree
+    except Exception as e:
+        log_error("carlist", "scrape_failed", f"{e} for {url}")
+        return None
 
+def zenrows_scrape(url: str):
+    """Returns a list of listings ([] means Carlist had none), or None if the scrape failed."""
+    tree = fetch_page(url)
+    if tree is None:
+        return None
+
+    try:
         script_tags = tree.xpath('//script[@type="application/ld+json"]')
         if not script_tags:
             log_error("carlist", "scrape_failed", f"No listing data on page for {url}")
@@ -175,13 +191,15 @@ def search_inputs(query: SearchQuery, filters: SearchFilters) -> dict:
         "variant": query.variant,
         "cc": query.cc,
         "body_type": query.body_type,
+        "variant_slug": query.variant_slug,
+        "body_slug": query.body_slug,
         "year": filters.min_year or query.year,
         "transmission": filters.transmission,
     }
 
 def vehicle_key(inputs: dict) -> str:
     """Identifies the car itself, ignoring condition/cc/transmission, for linking to insurable later."""
-    return market_cache.build_key({k: inputs[k] for k in ("make", "model", "variant", "body_type", "year")})
+    return market_cache.build_key({k: inputs[k] for k in ("make", "model", "variant", "variant_slug", "body_type", "body_slug", "year")})
 
 def scrape_low_and_high(query: SearchQuery, filters: SearchFilters):
     """Scrapes the cheapest and priciest pages at the same time."""
@@ -221,28 +239,23 @@ def local_match(title: str, target_variant: str) -> bool:
     matched = [tok for tok in tokens if tok in t]
     return len(matched) >= max(1, len(tokens) - 1)
 
-# Admin-only when called over HTTP; the valuation endpoint calls Search() directly in Python.
-@carlistRouter.post('/search', dependencies=[Depends(require_admin)])
-def Search(
-    query: SearchQuery, 
-    filters: SearchFilters, 
-    whitelist_attributes: Optional[list[str]] = [
-        "brand.name", "model", "itemCondition", "vehicleModelDate", 
-        "fuelType", "offers.price", "mileageFromOdometer.value", 
-        "vehicleTransmission", "image[0].url", "mainEntityOfPage"
-    ]
-):
+def find_listings(query: SearchQuery, filters: SearchFilters):
+    """Returns (matching raw listings, when they were scraped as an ISO date string).
+    Uses a saved result from the last 7 days when there is one, otherwise scrapes."""
     inputs = search_inputs(query, filters)
     search_key = market_cache.build_key(inputs)
 
     saved = market_cache.get_fresh(CACHE_TABLE, search_key, SCRAPER_VERSION)
     if saved is not None:
         unique_listings = saved["listings"]
+        scraped_at = saved["scraped_at"]
     else:
+        scraped_at = datetime.now(timezone.utc).isoformat()
         cheapest_listings, priciest_listings = scrape_low_and_high(query, filters)
 
-        # Fallback to broader URL path if slug returns zero results
-        if not cheapest_listings and not priciest_listings and query.variant:
+        # Fallback to broader URL path if slug returns zero results.
+        # Not for exact Carlist slugs: those are what the user picked, so a broader search would be wrong.
+        if not cheapest_listings and not priciest_listings and query.variant and not query.variant_slug:
             broad_query = query.model_copy(update={"variant": None})
             cheapest_listings, priciest_listings = scrape_low_and_high(broad_query, filters)
 
@@ -258,12 +271,13 @@ def Search(
     filtered_listings = []
     for item in unique_listings:
         title = item.get("name", "")
-        if query.variant:
+        # Title matching is only needed when the variant was guessed from our database wording
+        if query.variant and not query.variant_slug:
             if local_match(title, query.variant):
                 filtered_listings.append(item)
         else:
             filtered_listings.append(item)
-            
+
     prices = [
         int(item.get("offers", {}).get("price", 0)) 
         for item in filtered_listings 
@@ -273,6 +287,21 @@ def Search(
         print(f"Matched {len(filtered_listings)} listings. Price Range: RM {min(prices):,} -> RM {max(prices):,}")
     else:
         print(f"Matched {len(filtered_listings)} listings.")
+
+    return filtered_listings, scraped_at
+
+# Admin-only when called over HTTP; the valuation endpoint calls Search() directly in Python.
+@carlistRouter.post('/search', dependencies=[Depends(require_admin)])
+def Search(
+    query: SearchQuery,
+    filters: SearchFilters,
+    whitelist_attributes: Optional[list[str]] = [
+        "brand.name", "model", "itemCondition", "vehicleModelDate",
+        "fuelType", "offers.price", "mileageFromOdometer.value",
+        "vehicleTransmission", "image[0].url", "mainEntityOfPage"
+    ]
+):
+    filtered_listings, _ = find_listings(query, filters)
 
     response_data = []
     if not whitelist_attributes: 
@@ -294,6 +323,85 @@ def Search(
             response_data.append(filtered_item)
 
     return response_data
+
+OPTIONS_TABLE = "carlist_filter_options"
+# Carlist's filter lists change slowly, so each make/model is fetched at most once per this many days
+OPTIONS_FRESH_DAYS = 30
+
+def _model_path(make: str, model: str) -> str:
+    group = VEHICLE_MAP.get(make, {}).get(model) if isinstance(VEHICLE_MAP.get(make), dict) else None
+    return f"{make}/{group}/{model}" if group else f"{make}/{model}"
+
+def _path_segment(href: str) -> str:
+    """'https://www.carlist.my/used-cars-for-sale/honda/civic/1-5-e/malaysia' -> '1-5-e'"""
+    parts = href.split("?")[0].rstrip("/").split("/")
+    return parts[-2] if len(parts) >= 2 else ""
+
+def _count(li) -> int:
+    match = re.search(r"\(?(\d+)\)?\s*$", " ".join("".join(li.itertext()).split()))
+    return int(match.group(1)) if match else 0
+
+def parse_filter_options(tree) -> dict:
+    """Reads Carlist's own filter menus (variant, body type, year, transmission) from a listing page."""
+    def items(name):
+        return tree.xpath(f'//ul[contains(@class,"smenu__select--{name}")]/li')
+
+    variants = []
+    for li in items("variant"):
+        href = (li.xpath('.//a/@href') or [""])[0]
+        count = "".join(li.xpath('.//span[contains(@class,"text--muted")]/text()')).strip()
+        if li.get("data-value") and href:
+            variants.append({"label": li.get("data-value"), "slug": _path_segment(href), "count": int(count) if count.isdigit() else 0})
+
+    body_types = []
+    for li in items("body-type"):
+        href = (li.xpath('.//a/@href') or [""])[0]
+        if li.get("data-value") and href:
+            body_types.append({"label": li.get("data-value"), "slug": _path_segment(href)})
+
+    years = [li.get("data-value") for li in items("year") if (li.get("data-value") or "").isdigit() and _count(li) > 0]
+
+    transmissions = []
+    for href in tree.xpath('//ul[contains(@class,"smenu__select--transmission")]/li//a/@href'):
+        match = re.search(r"transmission=(\w+)", href)
+        if match and match.group(1) not in transmissions:
+            transmissions.append(match.group(1))
+
+    return {"variants": variants, "body_types": body_types, "years": years, "transmissions": transmissions}
+
+def get_filter_options(make: str, model: str) -> Optional[dict]:
+    """Carlist's filter lists for a make/model: saved copy if newer than OPTIONS_FRESH_DAYS, otherwise fetched once and saved."""
+    make, model = make.lower(), model.lower()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=OPTIONS_FRESH_DAYS)).isoformat()
+    try:
+        res = supabase.table(OPTIONS_TABLE).select("options").eq("make", make).eq("model", model).gte("fetched_at", cutoff).limit(1).execute()
+        if res.data:
+            return res.data[0]["options"]
+    except Exception as e:
+        log_error("cache", "db_error", f"Reading {OPTIONS_TABLE}: {e}", {"make": make, "model": model})
+
+    # "cars-for-sale" covers new, used and recon listings, so the lists include every variant
+    url = f"https://www.carlist.my/cars-for-sale/{_model_path(make, model)}/malaysia"
+    print(f"Fetching Carlist filter options: {url}")
+    # The full model page is large (over 1 MB) and needs browser rendering, so allow extra time.
+    # This only happens once per make/model every OPTIONS_FRESH_DAYS.
+    tree = fetch_page(url, timeout=90)
+    if tree is None:
+        return None
+
+    options = parse_filter_options(tree)
+    if not options["variants"] and not options["body_types"] and not options["years"]:
+        log_error("carlist", "no_filter_options", f"No filter lists found on {url}", {"make": make, "model": model})
+        return options
+
+    try:
+        supabase.table(OPTIONS_TABLE).upsert(
+            {"make": make, "model": model, "options": options, "fetched_at": datetime.now(timezone.utc).isoformat()},
+            on_conflict="make,model",
+        ).execute()
+    except Exception as e:
+        log_error("cache", "db_error", f"Saving {OPTIONS_TABLE}: {e}", {"make": make, "model": model})
+    return options
 
 @carlistRouter.get('/all_vehicles', dependencies=[Depends(require_admin)])
 def vehicle_map(make: str = None):

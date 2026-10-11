@@ -15,10 +15,10 @@ supabase: Client = create_client(supabase_url, supabase_key)
 valuationRouter = APIRouter(prefix="/valuation", tags=["valuation"])
 
 try:
-    from api.utils.carlist.carlist_router import SearchQuery as CarlistSearchQuery, SearchFilters as CarlistSearchFilters, Search as search_carlist
+    from api.utils.carlist.carlist_router import SearchQuery as CarlistSearchQuery, SearchFilters as CarlistSearchFilters, Search as search_carlist, find_listings as find_carlist_listings, VEHICLE_MAP as CARLIST_MAP
 except ImportError:
     try:
-        from utils.carlist.carlist_router import SearchQuery as CarlistSearchQuery, SearchFilters as CarlistSearchFilters, Search as search_carlist
+        from utils.carlist.carlist_router import SearchQuery as CarlistSearchQuery, SearchFilters as CarlistSearchFilters, Search as search_carlist, find_listings as find_carlist_listings, VEHICLE_MAP as CARLIST_MAP
     except ImportError:
         search_carlist = None
 
@@ -33,7 +33,7 @@ except ImportError:
 from api.utils.error_log import log_error
 from api.utils.auth import get_current_user, use_token, get_tokens, is_admin
 from api.utils.listings import (
-    VehicleDetails, mudah_car_query, mudah_motorcycle_query, carlist_query,
+    VehicleDetails, slug, mudah_car_query, mudah_motorcycle_query, carlist_query,
     filter_mudah_by_variant, from_mudah, from_carlist, for_viewer,
 )
 
@@ -144,7 +144,8 @@ def get_marketdata(request: MarketDataRequest, user=Depends(get_current_user)):
             log_error("mudah", "search_error", str(e), v.model_dump())
             errors["mudah"] = str(e)
 
-    if search_carlist and not is_motorcycle:
+    # The model list merges both sources, so skip Carlist for models it doesn't have
+    if search_carlist and not is_motorcycle and slug(v.model) in (CARLIST_MAP.get(slug(v.make)) or {}):
         try:
             query, filters = carlist_query(v)
             carlist_listings = search_carlist(query=CarlistSearchQuery(**query), filters=CarlistSearchFilters(**filters), whitelist_attributes=None)
@@ -157,44 +158,102 @@ def get_marketdata(request: MarketDataRequest, user=Depends(get_current_user)):
 
     if not is_motorcycle and v.year:
         try:
-            query = supabase.table('vehicles').select('id')
-
-            # Use ilike for case-insensitive robust matching against the DB strings
-            db_make = v.make.replace('-', ' ').strip()
-            query = query.ilike('make', db_make)
-
-            candidates = normalize_db_model(db_make, v.model.replace('-', ' '))
-            query = query.in_('model', candidates)
-
-            query = query.eq('year', str(v.year))
-            if v.variant: query = query.ilike('variant', v.variant.strip())
-
-            res = query.execute()
-
-            if res.data:
-                vehicle_ids = [v['id'] for v in res.data]
-                val_res = supabase.table('vehicle_values').select('value').in_('vehicle_id', vehicle_ids).execute()
-
-                if val_res.data:
-                    values = [float(v['value']) for v in val_res.data if v.get('value') is not None]
-                    if values:
-                        results["insurable"] = {
-                            "lowest": int(min(values)),
-                            "average": int(sum(values) / len(values)),
-                            "highest": int(max(values))
-                        }
-                    else:
-                        results["insurable"] = {"meta": "No valid values found"}
-                else:
-                    results["insurable"] = {"meta": "No vehicle values found"}
-            else:
-                results["insurable"] = {"meta": "No vehicle found"}
+            results["insurable"] = lookup_insurable(v)
         except Exception as e:
             log_error("insurable", "db_error", str(e), v.model_dump())
             errors["insurable"] = str(e)
 
     # Error messages can contain source URLs, so only admins see them (everything is in error_logs)
     return {"results": results, "errors": (errors or None) if is_admin(user) else None, "tokens_remaining": tokens_after}
+
+
+def lookup_insurable(v: VehicleDetails) -> dict:
+    """Lowest / average / highest insurable value across all matching rows in our database."""
+    query = supabase.table('vehicles').select('id')
+
+    # Use ilike for case-insensitive robust matching against the DB strings
+    db_make = v.make.replace('-', ' ').strip()
+    query = query.ilike('make', db_make)
+
+    candidates = normalize_db_model(db_make, v.model.replace('-', ' '))
+    query = query.in_('model', candidates)
+
+    query = query.eq('year', str(v.year))
+    if v.variant: query = query.ilike('variant', v.variant.strip())
+
+    res = query.execute()
+    if not res.data:
+        return {"meta": "No vehicle found"}
+
+    vehicle_ids = [row['id'] for row in res.data]
+    val_res = supabase.table('vehicle_values').select('value').in_('vehicle_id', vehicle_ids).execute()
+    if not val_res.data:
+        return {"meta": "No vehicle values found"}
+
+    values = [float(row['value']) for row in val_res.data if row.get('value') is not None]
+    if not values:
+        return {"meta": "No valid values found"}
+    return {"lowest": int(min(values)), "average": int(sum(values) / len(values)), "highest": int(max(values))}
+
+
+# --- Insurable Value page (our database only) ---
+
+@valuationRouter.get('/options/makes')
+def get_makes():
+    try:
+        return {"makes": [row["make"] for row in supabase.rpc("vehicle_makes").execute().data]}
+    except Exception as e:
+        log_error("insurable", "db_error", f"vehicle_makes: {e}")
+        raise HTTPException(status_code=500, detail="Could not load makes.")
+
+
+@valuationRouter.get('/options/models')
+def get_models(make: str):
+    try:
+        return {"models": [row["model"] for row in supabase.rpc("vehicle_models", {"p_make": make.strip()}).execute().data]}
+    except Exception as e:
+        log_error("insurable", "db_error", f"vehicle_models: {e}", {"make": make})
+        raise HTTPException(status_code=500, detail="Could not load models.")
+
+
+@valuationRouter.post("/insurable", summary="Insurable value from our database. Costs 1 token per call.")
+def insurable(vehicle: VehicleDetails, user=Depends(get_current_user)):
+    if not vehicle.year:
+        raise HTTPException(status_code=400, detail="Please select a year.")
+    tokens_after = use_token(user)
+    try:
+        result = lookup_insurable(vehicle)
+    except Exception as e:
+        log_error("insurable", "db_error", str(e), vehicle.model_dump())
+        result = {"meta": "Lookup failed"}
+    return {"insurable": result, "tokens_remaining": tokens_after}
+
+
+# --- Current Market Valuation page (market source only, using its own filter values) ---
+
+class MarketSearch(BaseModel):
+    make: str
+    model: str
+    condition: Literal["used", "new", "recon"] = "used"
+    variant_slug: Optional[str] = None
+    body_slug: Optional[str] = None
+    year: Optional[int] = None
+    transmission: Optional[Literal["automatic", "manual"]] = None
+
+
+@valuationRouter.post("/market", summary="Current market listings. Costs 1 token per call.")
+def market(search: MarketSearch, user=Depends(get_current_user)):
+    query = CarlistSearchQuery(make=search.make, model=search.model, condition=search.condition,
+                               variant_slug=search.variant_slug, body_slug=search.body_slug)
+    filters = CarlistSearchFilters(min_year=search.year, max_year=search.year, transmission=search.transmission)
+    tokens_after = use_token(user)
+    try:
+        items, scraped_at = find_carlist_listings(query, filters)
+    except Exception as e:
+        log_error("carlist", "search_error", str(e), search.model_dump())
+        items, scraped_at = [], None
+    listings = for_viewer([from_carlist(item) for item in items], is_admin(user))
+    return {"listings": listings, "as_of": scraped_at, "tokens_remaining": tokens_after}
 
 
 @valuationRouter.get('/tokens', summary="Get the current user's token count (applies the weekly refill if due).")
