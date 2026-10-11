@@ -1,4 +1,5 @@
-// Container to display listings from both Mudah and Carlist
+// Container to display market listings. The server sends them already in this neutral shape;
+// source, url and image are only included for admins.
 
 import { Car, CircleDollarSign, HandCoins, ArrowUp, ArrowDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
@@ -52,7 +53,8 @@ export function PriceContainer({
 }
 
 interface UnifiedListing {
-    source: 'Mudah' | 'Carlist'
+    id: string
+    source?: 'Mudah' | 'Carlist'
     make: string
     model: string
     region?: string
@@ -66,8 +68,7 @@ interface UnifiedListing {
     bodyType?: string
     engineCapacity?: string
     image?: string
-    url: string
-    originalData?: any
+    url?: string
 }
 
 interface UnifiedListingsDisplayProps {
@@ -102,46 +103,11 @@ interface UnifiedListingsDisplayProps {
 }
 
 const normalizeListing = (listing: any): UnifiedListing | null => {
-    if (!listing || typeof listing !== 'object') {
+    if (!listing || typeof listing !== 'object' || !listing.id) {
         console.warn("Invalid listing object:", listing)
         return null
     }
-    if (listing.adview_url || listing.make_name) {
-        return {
-            source: 'Mudah',
-            make: listing.make_name || '',
-            model: listing.model_name || '',
-            variant: listing.variant,
-            year: listing.manufactured_year || '',
-            price: listing.price || listing.normalizedPrice || 0,
-            mileage: listing.mileage,
-            transmission: listing.transmission_name,
-            fuelType: listing.fueltype,
-            condition: listing.condition_name,
-            bodyType: listing.car_type_name,
-            engineCapacity: listing.engine_capacity,
-            image: listing.image,
-            url: listing.adview_url || '',
-            originalData: listing
-        }
-    }
-    return {
-        source: 'Carlist',
-        make: listing['brand.name'] || listing.make || '',
-        model: listing.model || '',
-        variant: listing.variant,
-        year: listing.vehicleModelDate || listing['vehicleModelDate'] || '',
-        price: listing['offers.price'] || listing.price || listing.normalizedPrice || 0,
-        mileage: listing['mileageFromOdometer.value'] ? `${listing['mileageFromOdometer.value']} km` : listing.mileage,
-        transmission: listing.vehicleTransmission || listing['vehicleTransmission'] || listing.transmission,
-        fuelType: listing.fuelType || listing['fuelType'],
-        condition: listing.itemCondition || listing['itemCondition'] || listing.condition,
-        bodyType: listing.bodyType,
-        engineCapacity: listing.engineCapacity,
-        image: listing.image || listing['image[0].url'] || (Array.isArray(listing.images) ? listing.images[0] : undefined),
-        url: listing.url || listing.mainEntityOfPage || listing['mainEntityOfPage'] || '',
-        originalData: listing
-    }
+    return { ...listing, price: Number(listing.price) || 0 }
 }
 
 export default function UnifiedListingsDisplay({
@@ -153,7 +119,7 @@ export default function UnifiedListingsDisplay({
     insurableData
 }: UnifiedListingsDisplayProps) {
 
-    const [removedUrls, setRemovedUrls] = useState<Set<string>>(new Set())
+    const [removedIds, setRemovedIds] = useState<Set<string>>(new Set())
     const [viewMode, setViewMode] = useState<'ascending' | 'descending'>('ascending')
     const [sourceFilter, setSourceFilter] = useState<'all' | 'mudah' | 'carlist'>('all')
     const [isFloating, setIsFloating] = useState(false)
@@ -173,15 +139,15 @@ export default function UnifiedListingsDisplay({
 
     const displayListings = useMemo(() => {
         let source = normalizedListings
-        let filtered = source.filter(listing => !removedUrls.has(listing.url))
+        let filtered = source.filter(listing => !removedIds.has(listing.id))
         if (sourceFilter !== 'all') {
-            filtered = filtered.filter(listing => listing.source.toLowerCase() === sourceFilter)
+            filtered = filtered.filter(listing => listing.source?.toLowerCase() === sourceFilter)
         }
         return [...filtered].sort((a, b) => {
             if (viewMode === 'ascending') { return a.price - b.price } 
             else { return b.price - a.price }
         })
-    }, [viewMode, normalizedListings, removedUrls, sourceFilter])
+    }, [viewMode, normalizedListings, removedIds, sourceFilter])
 
     const paginatedListings = useMemo(() => {
         const startIdx = (currentPage - 1) * ITEMS_PER_PAGE
@@ -190,8 +156,8 @@ export default function UnifiedListingsDisplay({
 
     const totalPages = Math.ceil(displayListings.length / ITEMS_PER_PAGE) || 1
 
-    const removeListing = (url: string) => {
-        setRemovedUrls(prev => new Set(prev).add(url))
+    const removeListing = (id: string) => {
+        setRemovedIds(prev => new Set(prev).add(id))
     }
 
     const sourceCounts = useMemo(() => {
@@ -403,7 +369,7 @@ export default function UnifiedListingsDisplay({
                 <div className="rounded-xl border border-dashed border-gray-300 flex flex-col items-center justify-center p-12 text-center bg-gray-50/50 mt-4">
                     <Car className="w-16 h-16 mx-auto text-gray-300 mb-4" />
                     <h3 className="text-xl font-bold text-gray-700 mb-2">No Market Listings Found</h3>
-                    <p className="text-gray-500 max-w-md">There are currently no live listings on Mudah or Carlist that exactly match this specific vehicle's specifications.</p>
+                    <p className="text-gray-500 max-w-md">No listings found.</p>
                 </div>
             )}
         </div>

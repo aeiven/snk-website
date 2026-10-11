@@ -151,7 +151,7 @@ def search(searchQuery: CarSearchQuery | MotorSearchQuery,
 
 
 
-@mudahRouter.get('/all_vehicles',
+@mudahRouter.get('/all_vehicles', dependencies=[Depends(require_admin)],
                  summary="Returns a map of every make and model available with their corresponding IDs. Or return a list of models from a specified make with their corresponding IDs",
                  response_model=dict[str, str] | dict[str, dict[str, str]])
 def vehicle_map(make: str = None):
@@ -166,7 +166,7 @@ def vehicle_map(make: str = None):
     return VEHICLE_MAP[make]
 
 
-@mudahRouter.get('/all_motorcycles',
+@mudahRouter.get('/all_motorcycles', dependencies=[Depends(require_admin)],
                  summary="Returns a map of every motorcycle make and model available with their corresponding IDs. Or return a list of models from a specified make with their corresponding IDs",
                  response_model=dict[str, str] | dict[str, dict[str, str]])
 def motorcycle_map(make: str = None):

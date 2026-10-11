@@ -1,10 +1,11 @@
-// For displaying all Mudah and Carlist listings
-// The listings are displayed in a "grid" card layout
+// For displaying market listings in a "grid" card layout.
+// source, url and image only arrive for admins (the server strips them for everyone else).
 import { useAuth } from '@/context/AuthContext'
 import { ExternalLink, Calendar, Gauge, Fuel, Settings, Trash2 } from 'lucide-react'
 
 interface UnifiedListing {
-    source: 'Mudah' | 'Carlist'
+    id: string
+    source?: 'Mudah' | 'Carlist'
     make: string
     model: string
     variant?: string
@@ -17,12 +18,12 @@ interface UnifiedListing {
     bodyType?: string
     engineCapacity?: string
     image?: string
-    url: string
+    url?: string
 }
 
 interface UnifiedGridViewProps {
     listings: UnifiedListing[]
-    onRemove: (url: string) => void
+    onRemove: (id: string) => void
     vehicleType?: 'car' | 'motorcycle'
 }
 
@@ -65,7 +66,7 @@ export default function UnifiedGridView({ listings, onRemove, vehicleType = 'car
 
                 return (
                     <div
-                        key={`${listing.url}-${index}`}
+                        key={`${listing.id}-${index}`}
                         className="rounded-xl md:rounded-2xl border border-brand-light-grey bg-brand-white hover:shadow-md transition-shadow duration-200"
                     >
                         <div className="p-4 md:p-5">
@@ -78,7 +79,7 @@ export default function UnifiedGridView({ listings, onRemove, vehicleType = 'car
                                         </h3>
                                         {/* Source badge */}
                                         {/* Only show source badge for admin */}
-                                        {user?.role === 'admin' ? (
+                                        {user?.role === 'admin' && listing.source ? (
                                             <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${listing.source === 'Mudah'
                                                 ? 'bg-blue-100 text-blue-800 border border-blue-200'
                                                 : 'bg-purple-100 text-purple-800 border border-purple-200'
@@ -119,7 +120,7 @@ export default function UnifiedGridView({ listings, onRemove, vehicleType = 'car
                                     </div>
 
                                     <button
-                                        onClick={() => onRemove(listing.url)}
+                                        onClick={() => onRemove(listing.id)}
                                         className="hover:text-red-500 transition-colors"
                                         aria-label="Remove listing"
                                         onMouseEnter={(e) => e.currentTarget.title = "Remove listing"}
@@ -200,7 +201,7 @@ export default function UnifiedGridView({ listings, onRemove, vehicleType = 'car
 
                             {/* View Listing Button */}
                             {/* Only show this for admins */}
-                            {user?.role === 'admin' && (
+                            {user?.role === 'admin' && listing.url && (
                                 <a
                                     href={listing.url}
                                     target="_blank"

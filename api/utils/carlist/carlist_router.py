@@ -295,7 +295,7 @@ def Search(
 
     return response_data
 
-@carlistRouter.get('/all_vehicles')
+@carlistRouter.get('/all_vehicles', dependencies=[Depends(require_admin)])
 def vehicle_map(make: str = None):
     if not make:
         return VEHICLE_MAP

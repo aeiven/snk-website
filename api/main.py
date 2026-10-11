@@ -6,15 +6,26 @@ from api.utils.zigwheels.router import informationRouter
 from api.utils.carlist.carlist_router import carlistRouter
 from api.utils.insurable.router import insurableRouter
 from api.utils.valuation.valuation_router import valuationRouter
+from api.utils.market_router import marketRouter
 
 
 from api.utils.admin.admin_router import router as adminRouter
 
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 VERSION = "0.1.1"
 
-app = FastAPI(debug=True, version=VERSION, title=f"Vehicle Valuation API | v{VERSION}", root_path='/api')
+# The docs list every endpoint, including source-named ones, so they are only served
+# where API_DOCS=1 is set (local development), never on the live server.
+SHOW_DOCS = os.environ.get("API_DOCS") == "1"
+
+app = FastAPI(
+    debug=True, version=VERSION, title=f"Vehicle Valuation API | v{VERSION}", root_path='/api',
+    docs_url="/docs" if SHOW_DOCS else None,
+    redoc_url="/redoc" if SHOW_DOCS else None,
+    openapi_url="/openapi.json" if SHOW_DOCS else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,6 +62,7 @@ app.include_router(informationRouter)
 app.include_router(carlistRouter)
 app.include_router(insurableRouter)
 app.include_router(valuationRouter)
+app.include_router(marketRouter)
 
 
 app.include_router(adminRouter)
