@@ -1,35 +1,34 @@
 import os
 import re
+import json
 import concurrent.futures
 from typing import Literal, Optional, Annotated
-from json import load, loads
 from os import path
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, field_validator, model_validator
 from lxml import etree
 from dotenv import load_dotenv
 
-# Database and Scraping API imports
-from supabase import create_client, Client
 from zenrows import ZenRowsClient
 
-# --- SETUP CREDENTIALS ---
-load_dotenv(".env.local")
+from api.utils import market_cache
+from api.utils.auth import require_admin
+from api.utils.error_log import log_error
 
-# Initialize the Supabase client
-supabase_url: str = os.environ.get("SUPABASE_URL")
-supabase_key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") 
-supabase: Client = create_client(supabase_url, supabase_key)
+load_dotenv(".env.local")
 
 carlistRouter = APIRouter(prefix="/carlist")
 
-# Fetch vehicle group info from vehicle_map.json
+CACHE_TABLE = "temporary_carlist"
+# Raise this whenever the URL builder or matching logic changes, so results saved by older code are ignored.
+SCRAPER_VERSION = 1
+
 vehicle_map_path = path.join(path.dirname(__file__), "vehicle_map.json")
 with open(vehicle_map_path, "r") as f:
-    VEHICLE_MAP = load(f)
+    VEHICLE_MAP = json.load(f)
 
 class SearchQuery(BaseModel):
     make: str
@@ -37,6 +36,8 @@ class SearchQuery(BaseModel):
     condition: str = "used"
     variant: Optional[str] = None
     body_type: Optional[str] = None
+    year: Optional[str] = None
+    cc: Optional[str] = None
 
     @field_validator('make')
     @classmethod
@@ -48,204 +49,256 @@ class SearchQuery(BaseModel):
 
     @model_validator(mode='after')
     def validate_model(self):
-        make_lower = self.make.lower()
-        model_lower = self.model.lower()
-        models = VEHICLE_MAP.get(make_lower)
-        if model_lower not in models:
+        models = VEHICLE_MAP.get(self.make.lower())
+        if self.model.lower() not in models:
             raise RequestValidationError(f"Model '{self.model}' not found for make '{self.make}'.")
         return self
 
-
 class SearchFilters(BaseModel):
     page_size: Optional[Annotated[int, Field(gt=1)]] = 50
-    sort: Optional[Literal['asc', 'desc']] = None
+    sort: Optional[str] = None
     min_year: Optional[Annotated[int, Field(ge=1900, le=2100)]] = None
     max_year: Optional[Annotated[int, Field(ge=1900, le=2100)]] = None
     min_price: Optional[Annotated[int, Field(ge=0)]] = None
     max_price: Optional[Annotated[int, Field(ge=0)]] = None
     min_mileage: Optional[Annotated[int, Field(ge=0)]] = None
     max_mileage: Optional[Annotated[int, Field(ge=0)]] = None
-    transmission: Optional[Literal['Manual', 'Automatic']] = None
-    fuel_type: Optional[Literal['Petrol', 'Hybrid', 'Diesel', 'Electric', 'Unleaded']] = None
-    driven_wheel: Optional[Literal['FWD', 'AWD', 'RWD', '4WD']] = None
+    transmission: Optional[str] = None
+    fuel_type: Optional[str] = None
+    driven_wheel: Optional[str] = None
 
-    @field_validator('sort', mode='after')
-    def format_sort(cls, value: str):
-        if not value: return None
-        return "price."+value
+def slugify_variant(query: SearchQuery) -> Optional[str]:
+    """Generates Carlist path slugs (e.g., '1-5-e' for 1498cc Civic E, or '2-0i')."""
+    if not query.variant:
+        return None
+        
+    v = query.variant.lower().replace("(cbu)", "").replace("(ckd)", "").strip()
+    
+    # Single-letter trims (e.g. E, V, RS) require engine displacement prefixes
+    if len(v) <= 2 and query.cc:
+        try:
+            cc_float = round(int(query.cc) / 1000.0, 1)
+            return f"{str(cc_float).replace('.', '-')}-{v}"
+        except Exception:
+            pass
+            
+    s = v.replace(".", "-").replace(" ", "-")
+    s = re.sub(r'[^a-z0-9\-]', '', s)
+    slug = re.sub(r'-+', '-', s).strip('-')
+    return slug if len(slug) > 1 else None
 
-
-def build_url(query: SearchQuery, filters: SearchFilters) -> str:
+def build_carlist_url(query: SearchQuery, filters: SearchFilters, sort_order: str) -> str:
     path_parts = ["https://www.carlist.my/"]
     path_parts.append(f"{query.condition}-cars-for-sale/")
-    path_parts.append(f"{query.make}/")
+    path_parts.append(f"{query.make.lower()}/")
     
-    group = None
-    models = VEHICLE_MAP.get(query.make.lower(), [])
-    if models:
-        group = models.get(query.model.lower())
-        if group:
-            path_parts.append(f"{group}/{query.model}/")
-        else:
-            path_parts.append(f"{query.model}/")
+    models = VEHICLE_MAP.get(query.make.lower(), {})
+    clean_model = query.model.lower()
+    group = models.get(clean_model) if isinstance(models, dict) else None
+    
+    if group:
+        path_parts.append(f"{group}/{clean_model}/")
+    else:
+        path_parts.append(f"{clean_model}/")
 
-    if query.variant: path_parts.append(f"{query.variant}/")
-    if query.body_type: path_parts.append(f"body-{query.body_type}/")
+    var_slug = slugify_variant(query)
+    if var_slug:
+        path_parts.append(f"{var_slug}/")
+
+    if query.body_type:
+        clean_body = query.body_type.replace("4D ", "").replace("2D ", "").strip().capitalize()
+        path_parts.append(f"body-{clean_body}/")
+
+    year_val = filters.min_year or query.year
+    if year_val:
+        path_parts.append(f"year-{year_val}/")
+
     path_parts.append("malaysia")
-    
     url = "".join(path_parts)
-    query_params = ["page_number=1"]
     
-    for parameter, value in filters.model_dump().items():
-        if not value: continue
-        query_params.append(f'{parameter}={str(value).split(",")[0]}')
-
+    # Query parameters
+    query_params = [f"sort={sort_order}", "page_number=1"]
+    
+    if filters.transmission:
+        trans_str = filters.transmission.lower()
+        if "auto" in trans_str:
+            query_params.append("transmission=automatic")
+        elif "manual" in trans_str:
+            query_params.append("transmission=manual")
+            
     url += "?" + "&".join(query_params)
     return url
 
 def zenrows_scrape(url: str):
-    """Uses ZenRows API to bypass Cloudflare and fetch the HTML."""
+    """Returns a list of listings ([] means Carlist had none), or None if the scrape failed."""
     api_key = os.environ.get("ZENROWS_API_KEY")
     if not api_key:
-        print("ZENROWS_API_KEY is missing from .env.local!")
+        log_error("carlist", "config_error", "ZENROWS_API_KEY is not set")
         return None
         
     client = ZenRowsClient(api_key)
-    
     params = {
         "js_render": "true", 
-        "antibot": "true",
-        "premium_proxy": "true",
+        "antibot": "true", 
+        "premium_proxy": "true", 
         "block_resources": "image,media,font,stylesheet"
     }
 
     try:
-        print(f"Fetching via ZenRows: {url}")
-        response = client.get(url, params=params)
-        
-        print(f"ZenRows Status Code: {response.status_code}") 
-        
+        response = client.get(url, params=params, timeout=25)
         if response.status_code != 200:
-            print(f"ZenRows failed with status: {response.status_code}")
+            log_error("carlist", "scrape_failed", f"HTTP {response.status_code} for {url}")
             return None
-            
-        html_content = response.text
-        htmlParser = etree.HTMLParser()
-        tree = etree.HTML(html_content, htmlParser)
-        
-        if tree is None: return None
-        
+
+        tree = etree.HTML(response.text, etree.HTMLParser())
+        if tree is None:
+            log_error("carlist", "scrape_failed", f"Empty page for {url}")
+            return None
+
         script_tags = tree.xpath('//script[@type="application/ld+json"]')
-        if not script_tags: 
-            print("No JSON-LD data found on the page.")
+        if not script_tags:
+            log_error("carlist", "scrape_failed", f"No listing data on page for {url}")
             return None
-        
-        data = loads(script_tags[0].text)[-1].get("itemListElement")
+
+        data = json.loads(script_tags[0].text)[-1].get("itemListElement")
         return [i['item'] for i in data] if data else []
-        
     except Exception as e:
-        print(f"ZenRows error: {e}")
+        log_error("carlist", "scrape_failed", f"{e} for {url}")
         return None
 
-def generate_filter_signature(query: SearchQuery, filters: SearchFilters) -> str:
-    """Combines all search filters into a single unique string for the cache."""
-    parts = [
-        query.condition,
-        str(query.variant),
-        str(query.body_type),
-        str(filters.min_year),
-        str(filters.transmission),
-        str(filters.fuel_type),
-        str(filters.min_mileage)
-    ]
-    signature = "_".join([p for p in parts if p and p != "None"])
-    return signature.replace(" ", "_").lower()
+def search_inputs(query: SearchQuery, filters: SearchFilters) -> dict:
+    """Every input that changes the Carlist URL. cc is included because it changes the variant slug."""
+    return {
+        "make": query.make,
+        "model": query.model,
+        "condition": query.condition,
+        "variant": query.variant,
+        "cc": query.cc,
+        "body_type": query.body_type,
+        "year": filters.min_year or query.year,
+        "transmission": filters.transmission,
+    }
 
-@carlistRouter.post('/search')
-def Search(query: SearchQuery, filters: SearchFilters,
-            whitelist_attributes: Optional[list[str]] = ["brand.name", "model", "itemCondition", "vehicleModelDate", "fuelType", "offers.price", "mileageFromOdometer.value", "vehicleTransmission", "image[0].url", "mainEntityOfPage"]):
-    
-    # THE MISSING LINE: Generate the unique signature for this exact search
-    cache_signature = generate_filter_signature(query, filters)
-    
-    # --- 1. THE CACHE CHECK ---
-    try:
-        cache_response = supabase.table("carlist_cache") \
-            .select("data") \
-            .eq("make", query.make.lower()) \
-            .eq("model", query.model.lower()) \
-            .eq("condition", cache_signature) \
-            .execute()
-            
-        if cache_response.data and len(cache_response.data) > 0:
-            print(f"Found [{cache_signature}] in Supabase Cache! Skipping ZenRows.")
-            return cache_response.data[0]["data"]
-    except Exception as e:
-        print(f"Cache read error: {e}")
+def vehicle_key(inputs: dict) -> str:
+    """Identifies the car itself, ignoring condition/cc/transmission, for linking to insurable later."""
+    return market_cache.build_key({k: inputs[k] for k in ("make", "model", "variant", "body_type", "year")})
 
-    # --- 2. THE ZENROWS MULTI-THREADED SCRAPE ---
-    print("Not in cache. Starting concurrent ZenRows scrape for High and Low prices...")
-    
-    filters.sort = "asc"
-    url_low = build_url(query, filters)
-    
-    filters.sort = "desc"
-    url_high = build_url(query, filters)
-    
+def scrape_low_and_high(query: SearchQuery, filters: SearchFilters):
+    """Scrapes the cheapest and priciest pages at the same time."""
+    url_low = build_carlist_url(query, filters, sort_order="price.asc")
+    url_high = build_carlist_url(query, filters, sort_order="price.desc")
+    print(f"Scraping Carlist Lowest URL:  {url_low}")
+    print(f"Scraping Carlist Highest URL: {url_high}")
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_low = executor.submit(zenrows_scrape, url_low)
         future_high = executor.submit(zenrows_scrape, url_high)
+        return future_low.result(), future_high.result()
+
+def local_match(title: str, target_variant: str) -> bool:
+    if not title or not target_variant:
+        return True
         
-        cheapest_listings = future_low.result() or []
-        priciest_listings = future_high.result() or []
+    t = title.upper()
+    v = target_variant.upper().replace("(CBU)", "").replace("(CKD)", "").strip()
     
-    all_listings = cheapest_listings + priciest_listings
-    
-    unique_listings = {item.get('url'): item for item in all_listings if item.get('url')}.values()
-    
+    # Single-letter trims (e.g. 'E', 'V', 'RS')
+    if len(v) <= 2:
+        patterns = [
+            rf"\b{re.escape(v)}\b",
+            rf"\b\d+\.\d+\s*{re.escape(v)}\b",
+            rf"\b{re.escape(v)}\s*SPEC\b",
+            rf"\b{re.escape(v)}\s*SEDAN\b"
+        ]
+        return any(re.search(p, t) for p in patterns)
+
+    tokens = [tok for tok in re.split(r"[\s\-_/()]+", v) if len(tok) > 1]
+    if not tokens:
+        return v in t
+
+    if "20I" in tokens:
+        return any(term in t for term in ["20I", "120I", "320I"])
+
+    matched = [tok for tok in tokens if tok in t]
+    return len(matched) >= max(1, len(tokens) - 1)
+
+# Admin-only when called over HTTP; the valuation endpoint calls Search() directly in Python.
+@carlistRouter.post('/search', dependencies=[Depends(require_admin)])
+def Search(
+    query: SearchQuery, 
+    filters: SearchFilters, 
+    whitelist_attributes: Optional[list[str]] = [
+        "brand.name", "model", "itemCondition", "vehicleModelDate", 
+        "fuelType", "offers.price", "mileageFromOdometer.value", 
+        "vehicleTransmission", "image[0].url", "mainEntityOfPage"
+    ]
+):
+    inputs = search_inputs(query, filters)
+    search_key = market_cache.build_key(inputs)
+
+    saved = market_cache.get_fresh(CACHE_TABLE, search_key, SCRAPER_VERSION)
+    if saved is not None:
+        unique_listings = saved["listings"]
+    else:
+        cheapest_listings, priciest_listings = scrape_low_and_high(query, filters)
+
+        # Fallback to broader URL path if slug returns zero results
+        if not cheapest_listings and not priciest_listings and query.variant:
+            broad_query = query.model_copy(update={"variant": None})
+            cheapest_listings, priciest_listings = scrape_low_and_high(broad_query, filters)
+
+        all_listings = (cheapest_listings or []) + (priciest_listings or [])
+        unique_listings = list({item.get('url'): item for item in all_listings if item.get('url')}.values())
+
+        # Only save real results: a failed or empty scrape should be retried by the next search.
+        if unique_listings:
+            market_cache.save(CACHE_TABLE, search_key, vehicle_key(inputs), SCRAPER_VERSION, inputs, unique_listings)
+        elif cheapest_listings is None and priciest_listings is None:
+            log_error("carlist", "scrape_failed", "Both price pages failed", inputs)
+
+    filtered_listings = []
+    for item in unique_listings:
+        title = item.get("name", "")
+        if query.variant:
+            if local_match(title, query.variant):
+                filtered_listings.append(item)
+        else:
+            filtered_listings.append(item)
+            
+    prices = [
+        int(item.get("offers", {}).get("price", 0)) 
+        for item in filtered_listings 
+        if item.get("offers", {}).get("price")
+    ]
+    if prices:
+        print(f"Matched {len(filtered_listings)} listings. Price Range: RM {min(prices):,} -> RM {max(prices):,}")
+    else:
+        print(f"Matched {len(filtered_listings)} listings.")
+
     response_data = []
     if not whitelist_attributes: 
-        response_data = list(unique_listings)
+        response_data = filtered_listings
     else:
-        for item in unique_listings:
+        for item in filtered_listings:
             filtered_item = {}
             for attribute in whitelist_attributes:
                 keys = []
                 for part in attribute.split('.'):
-                    matches = re.findall(r'([^\[\]]+)', part)
-                    keys.extend(matches)
-                
+                    keys.extend(re.findall(r'([^\[\]]+)', part))
                 value = item
                 try:
                     for key in keys:
-                        if isinstance(value, list) and key.isdigit():
-                            value = value[int(key)]
-                        else:
-                            value = value[key]
+                        value = value[int(key)] if isinstance(value, list) and key.isdigit() else value[key]
                     filtered_item[attribute] = value
                 except (KeyError, IndexError, TypeError):
                     filtered_item[attribute] = None
             response_data.append(filtered_item)
-    
-    # --- 3. SAVE TO CACHE ---
-    if len(response_data) > 0:
-        try:
-            supabase.table("carlist_cache").upsert({
-                "make": query.make.lower(),
-                "model": query.model.lower(),
-                "condition": cache_signature,
-                "data": response_data
-            }).execute()
-            print(f"Saved [{cache_signature}] to Supabase cache.")
-        except Exception as e:
-            print(f"Cache write error: {e}")
-            
+
     return response_data
 
 @carlistRouter.get('/all_vehicles')
 def vehicle_map(make: str = None):
-    if not make: return VEHICLE_MAP
-    make_lower = make.lower()
-    if make_lower not in VEHICLE_MAP:
-        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"meta": f"Unknown make provided: {make}"})
-    return VEHICLE_MAP[make_lower]
+    if not make:
+        return VEHICLE_MAP
+    if make.lower() not in VEHICLE_MAP:
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"meta": f"Unknown make: {make}"})
+    return VEHICLE_MAP[make.lower()]

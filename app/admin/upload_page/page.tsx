@@ -7,7 +7,7 @@ import { Cog } from "lucide-react"
 import { useState } from "react"
 
 export default function AdminUploadPage() {
-    const { user } = useAuth();
+    const { user, getAccessToken } = useAuth();
     const [file, setFile] = useState<File | null>(null);
     const [category, setCategory] = useState('');
     const [terminalLogs, setTerminalLogs] = useState('');
@@ -39,8 +39,11 @@ export default function AdminUploadPage() {
         formData.append('category', category);
 
         try {
+            // The API checks this login token and only accepts admins
+            const accessToken = await getAccessToken();
             const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/admin/upload-prices`, {
                 method: 'POST',
+                headers: { 'Authorization': `Bearer ${accessToken}` },
                 body: formData,
             });
 

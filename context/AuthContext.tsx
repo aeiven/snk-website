@@ -31,13 +31,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const router = useRouter();
     const supabase = createClient();
 
+    // role and tokens live in app_metadata, which only the server can change (users can edit user_metadata themselves)
     const mapUser = (sbUser: SupabaseUser): User => {
         return {
             email: sbUser.email,
             full_name: sbUser.user_metadata?.full_name,
-            role: sbUser.user_metadata?.role,
-            tokens_remaining: sbUser.user_metadata?.tokens_remaining,
-            tokens_per_week: sbUser.user_metadata?.tokens_per_week,
+            role: sbUser.app_metadata?.role,
+            tokens_remaining: sbUser.app_metadata?.tokens_remaining,
+            tokens_per_week: sbUser.app_metadata?.tokens_per_week,
         };
     }
 
@@ -47,6 +48,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 const { data: { user: sbUser } } = await supabase.auth.getUser();
                 if (sbUser) {
                     setUser(mapUser(sbUser));
+                    // Lets the API apply the weekly refill so the token count shown is current
+                    refreshTokens();
                 } else {
                     setUser(null);
                 }
@@ -91,7 +94,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const refreshTokens = async () => {
         try {
-            // refreshSession() forces a new JWT from Supabase with the latest user_metadata.
+            // Asking the API for the token count applies the weekly refill if it is due
+            const { data: { session: current } } = await supabase.auth.getSession();
+            if (current?.access_token) {
+                const API_BASE = process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '') : ''
+                await fetch(`${API_BASE}/api/valuation/tokens`, { headers: { Authorization: `Bearer ${current.access_token}` } }).catch(() => null);
+            }
+
+            // refreshSession() forces a new JWT from Supabase with the latest app_metadata.
             // This is necessary because the backend updates metadata via admin API,
             // which doesn't invalidate the client's cached session.
             const { data: { session }, error } = await supabase.auth.refreshSession();

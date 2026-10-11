@@ -1,10 +1,12 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from supabase import create_client, Client
 from os import getenv
 from dotenv import load_dotenv
+
+from api.utils.auth import require_admin
 
 load_dotenv('.env.local')
 
@@ -25,7 +27,8 @@ class vehicle_identification(BaseModel):
     transmission: Optional[str] = None
     style: Optional[str] = None
 
-@insurableRouter.post("/search")
+# Returns insurable values without spending a token, so admin-only
+@insurableRouter.post("/search", dependencies=[Depends(require_admin)])
 def get_insurable(vehicle_detail: vehicle_identification):
     # 1. Base query for the vehicles table
     query = supabase.table('vehicles').select('id')
@@ -82,7 +85,6 @@ def get_years(make: str, model: str):
 
     years = sorted(list(set(d['year'] for d in res.data if d.get('year'))), reverse=True)
     return {"years": years}
-
 
 @insurableRouter.get('/details')
 def get_details(make: str, model: str, year: str):
