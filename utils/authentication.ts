@@ -18,7 +18,7 @@ export async function login(formData: FormData) {
   const user = {
     email: data.user.email,
     full_name: data.user.user_metadata.full_name,
-    role: data.user.user_metadata.role
+    role: data.user.app_metadata?.role
   }
   return { ok: true, user: user };
 }
@@ -31,11 +31,8 @@ export async function signup(formData: FormData) {
     password: formData.get("password") as string,
     options: {
       data: {
+        // role and tokens are set by the database (set_default_app_metadata trigger), not by the browser
         full_name: formData.get("fullname") as string,
-        role: "user",
-        tokens_remaining: 3,
-        tokens_per_week: 3,
-        last_refill_at: new Date().toISOString(),
       },
       redirectTo: `${process.env.NODE_ENV === "development" ? "http://127.0.0.1:3000" : process.env.NEXT_PUBLIC_APP_URL}`,
     },

@@ -2,11 +2,19 @@ from requests import get
 from json import load
 from typing import Literal, Annotated, Optional
 
-from fastapi import APIRouter, Response, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 from os import path
 
+from api.utils import market_cache
+from api.utils.auth import require_admin
+from api.utils.error_log import log_error
+
 mudahRouter = APIRouter(prefix='/mudah')
+CACHE_TABLE = 'temporary_mudah'
+# Raise this whenever the search or formatting logic changes, so results saved by older code are ignored.
+SCRAPER_VERSION = 1
 VEHICLE_MAP_PATH = path.join(path.dirname(__file__), 'vehicle_map.json')
 MOTORCYCLE_MAP_PATH = path.join(path.dirname(__file__), 'motorcycle_map.json')
 with open(VEHICLE_MAP_PATH, 'r', encoding='utf-8') as f:
@@ -98,59 +106,45 @@ def build_url(query_model: dict, type: int) -> str:
     return url.strip('&')
 
 
-@mudahRouter.post('/search', summary="Query the Mudah api for available listings based on the make and model", response_model=list[dict])
+# Admin-only when called over HTTP; the valuation endpoint calls search() directly in Python.
+@mudahRouter.post('/search', dependencies=[Depends(require_admin)], summary="Query the Mudah api for available listings based on the make and model", response_model=list[dict])
 def search(searchQuery: CarSearchQuery | MotorSearchQuery,
            whitelist_attributes: list[str | None] | None = ['model_name', 'make_name', 'condition_name', 'manufactured_year', 'fueltype', 'price', 'mileage', 'transmission_name', 'engine_capacity', 'car_type_name', 'adview_url','image', 'variant']):
-    URL = build_url(searchQuery.model_dump().items(), type=1020 if isinstance(searchQuery, CarSearchQuery) else 1040)
-    html = get(URL)
-    if not html.ok and html.status_code != 200:
-        return Response(status_code=400, content={
-            'meta': "An unexpected error occured."
-        })
-    listings = html.json()['data']
-    
-    # DEBUG logs
-    # if listings:
-    #     print ("First listing variant field:" , listings[0].get('attributes', {}).get('listing_id'))
+    category = 1020 if isinstance(searchQuery, CarSearchQuery) else 1040
+    inputs = {'category': category, **searchQuery.model_dump()}
+    search_key = market_cache.build_key(inputs)
+
+    saved = market_cache.get_fresh(CACHE_TABLE, search_key, SCRAPER_VERSION)
+    if saved is not None:
+        listings = saved['listings']
+    else:
+        URL = build_url(searchQuery.model_dump().items(), type=category)
+        try:
+            html = get(URL, timeout=15)
+        except Exception as e:
+            log_error('mudah', 'scrape_failed', f"{e} for {URL}", inputs)
+            return JSONResponse(status_code=400, content={'meta': "An unexpected error occured."})
+        if not html.ok:
+            log_error('mudah', 'scrape_failed', f"HTTP {html.status_code} for {URL}", inputs)
+            return JSONResponse(status_code=400, content={'meta': "An unexpected error occured."})
+
+        # Save the raw attributes; the whitelist and image fix below are applied on every read
+        listings = [item.get('attributes') or {} for item in html.json().get('data', [])]
+        if listings:
+            vehicle_key = market_cache.build_key({k: inputs.get(k) for k in ('category', 'make_id', 'model_id', 'motorcycle_make_id', 'motorcycle_model_id', 'mfg_year', 'car_type_id')})
+            market_cache.save(CACHE_TABLE, search_key, vehicle_key, SCRAPER_VERSION, inputs, listings)
 
     response = []
-    if whitelist_attributes:
-        for id in range(len(listings)):
-            attributes = listings[id].get('attributes')
-            filtered = {key: attributes[key] for key in whitelist_attributes if key in attributes}
-            
-            if 'image' in filtered and filtered['image']:
-                # Remove the first directory segment
-                image_path = filtered['image'].lstrip('/')  # Remove leading slash
-                path_parts = image_path.split('/')
-                if len(path_parts) > 1:
-                    # Remove first directory and join the rest
-                    trimmed_path = '/'.join(path_parts[1:])
-                else:
-                    trimmed_path = image_path
-                filtered['image'] = f"https://img.rnudah.com/images/{trimmed_path}"
-            
-            #print("DEBUG filtered:", filtered)
-            
-            response.append(filtered)
-            
-            # response.append({key: attributes[key] for key in whitelist_attributes if key in attributes})
-    else:
-        for id in range(len(listings)):
-            attributes = listings[id].get('attributes')
-            
-            if 'image' in attributes and attributes['image']:
+    for attributes in listings:
+        item = {key: attributes[key] for key in whitelist_attributes if key in attributes} if whitelist_attributes else dict(attributes)
 
-                image_path = attributes['image'].lstrip('/') 
-                path_parts = image_path.split('/')
-                if len(path_parts) > 1:
-                    # Remove first directory and join the rest
-                    trimmed_path = '/'.join(path_parts[1:])
-                else:
-                    trimmed_path = image_path
-                attributes['image'] = f"https://img.rnudah.com/images/{trimmed_path}"
-                
-            response.append(attributes)
+        if item.get('image'):
+            # Remove the first directory segment
+            path_parts = item['image'].lstrip('/').split('/')
+            trimmed_path = '/'.join(path_parts[1:]) if len(path_parts) > 1 else path_parts[0]
+            item['image'] = f"https://img.rnudah.com/images/{trimmed_path}"
+
+        response.append(item)
 
     return response
 

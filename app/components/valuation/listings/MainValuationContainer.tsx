@@ -38,12 +38,10 @@ export function PriceContainer({
     title,
     price,
     color,
-    //formatPrice
 }: {
     title: string,
     price: string,
     color: 'lowest' | 'highest' | 'average',
-    //formatPrice: (price: number) => string
 }) {
     return (
         <div className={`rounded-xl md:rounded-2xl flex justify-between sm:items-center md:flex-col print:flex-col bg-gradient-to-br ${color === 'lowest' ? 'from-green-50 to-green-100 border border-green-200' : color === 'highest' ? 'from-purple-50 to-purple-100 border border-purple-200' : 'from-blue-50 to-blue-100 border border-blue-200'} p-2 md:p-4`}>
@@ -53,9 +51,7 @@ export function PriceContainer({
     )
 }
 
-// Works for both Mudah and Carlist
 interface UnifiedListing {
-    // Common fields
     source: 'Mudah' | 'Carlist'
     make: string
     model: string
@@ -71,8 +67,6 @@ interface UnifiedListing {
     engineCapacity?: string
     image?: string
     url: string
-
-    // Original data for fallback
     originalData?: any
 }
 
@@ -107,16 +101,11 @@ interface UnifiedListingsDisplayProps {
     insurableData?: any
 }
 
-// Normalize listing from either source
 const normalizeListing = (listing: any): UnifiedListing | null => {
-
-    // Safety check to see if listing is valid
-    // If listing is not an object, return null
     if (!listing || typeof listing !== 'object') {
         console.warn("Invalid listing object:", listing)
         return null
     }
-    // Check if it's a Mudah listing (has adview_url)
     if (listing.adview_url || listing.make_name) {
         return {
             source: 'Mudah',
@@ -136,7 +125,6 @@ const normalizeListing = (listing: any): UnifiedListing | null => {
             originalData: listing
         }
     }
-    // Otherwise it's a Carlist listing (Updated to perfectly map our new HTML parser output)
     return {
         source: 'Carlist',
         make: listing['brand.name'] || listing.make || '',
@@ -167,61 +155,34 @@ export default function UnifiedListingsDisplay({
 
     const [removedUrls, setRemovedUrls] = useState<Set<string>>(new Set())
     const [viewMode, setViewMode] = useState<'ascending' | 'descending'>('ascending')
-    // const [displayMode, setDisplayMode] = useState<'grid' | 'list'>('grid')
     const [sourceFilter, setSourceFilter] = useState<'all' | 'mudah' | 'carlist'>('all')
     const [isFloating, setIsFloating] = useState(false)
     const [shouldShowFloating, setShouldShowFloating] = useState(false)
     const priceContainerRef = useRef<HTMLDivElement>(null)
     
-    // Pagination State
     const [currentPage, setCurrentPage] = useState(1)
     const ITEMS_PER_PAGE = 30
 
-    // Reset page to 1 when filters change
     useEffect(() => {
         setCurrentPage(1)
     }, [viewMode, sourceFilter, listings])
 
-    // Normalize all listings
     const normalizedListings = useMemo(() => {
         return listings.map(normalizeListing).filter((listing): listing is UnifiedListing => listing !== null)
     }, [listings])
 
-    const normalizedAscending = useMemo(() => {
-        return listingsAscending.map(normalizeListing).filter((listing): listing is UnifiedListing => listing !== null)
-    }, [listingsAscending])
-
-    const normalizedDescending = useMemo(() => {
-        return listingsDescending.map(normalizeListing).filter((listing): listing is UnifiedListing => listing !== null)
-    }, [listingsDescending])
-
-    // Update filtered listings when view mode or source filter changes
     const displayListings = useMemo(() => {
-        // Start with the raw combined list of normalized objects
         let source = normalizedListings
-
-        // Filter out removed items first
         let filtered = source.filter(listing => !removedUrls.has(listing.url))
-
-        // Filter by source
         if (sourceFilter !== 'all') {
-            filtered = filtered.filter(listing =>
-                listing.source.toLowerCase() === sourceFilter
-            )
+            filtered = filtered.filter(listing => listing.source.toLowerCase() === sourceFilter)
         }
-
-        // New Logic: Mix them up according to the option!
-        // We sort the entirely combined list exactly based on the viewMode filter.
         return [...filtered].sort((a, b) => {
-            if (viewMode === 'ascending') {
-                return a.price - b.price
-            } else {
-                return b.price - a.price
-            }
+            if (viewMode === 'ascending') { return a.price - b.price } 
+            else { return b.price - a.price }
         })
     }, [viewMode, normalizedListings, removedUrls, sourceFilter])
 
-    // Pagination Logic: Slice the sorted array into 30 items for the current page
     const paginatedListings = useMemo(() => {
         const startIdx = (currentPage - 1) * ITEMS_PER_PAGE
         return displayListings.slice(startIdx, startIdx + ITEMS_PER_PAGE)
@@ -233,7 +194,6 @@ export default function UnifiedListingsDisplay({
         setRemovedUrls(prev => new Set(prev).add(url))
     }
 
-    // Count listings by source
     const sourceCounts = useMemo(() => {
         const allListings = normalizedListings
         const mudah = allListings.filter(l => l.source === 'Mudah').length
@@ -241,27 +201,21 @@ export default function UnifiedListingsDisplay({
         return { mudah, carlist, total: mudah + carlist }
     }, [normalizedListings])
 
-    // Scroll detection for floating price container
     useEffect(() => {
         const handleScroll = () => {
             if (priceContainerRef.current) {
                 const rect = priceContainerRef.current.getBoundingClientRect()
                 const shouldFloat = rect.top < 0
-
                 if (shouldFloat !== isFloating) {
                     setIsFloating(shouldFloat)
-
                     if (shouldFloat) {
                         setShouldShowFloating(true)
                     } else {
-                        setTimeout(() => {
-                            setShouldShowFloating(false)
-                        }, 300)
+                        setTimeout(() => { setShouldShowFloating(false) }, 300)
                     }
                 }
             }
         }
-
         window.addEventListener('scroll', handleScroll)
         return () => window.removeEventListener('scroll', handleScroll)
     }, [isFloating])
@@ -270,19 +224,7 @@ export default function UnifiedListingsDisplay({
         return `RM ${price.toLocaleString()}`
     }
 
-    if (!displayListings || displayListings.length === 0) {
-        return (
-            <div className="h-svh flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 p-8 text-center">
-                <Car className="w-12 h-12 mx-auto text-gray-400 mb-3" />
-                <p className="text-gray-500">No listings found</p>
-            </div>
-        )
-    }
-
-    // Calculate price statistics
-    // New Logic: Get the absolute lowest, highest, and (lowest+highest)/2 from the mixed array!
     const validPrices = displayListings.map(l => l.price).filter(p => typeof p === 'number' && p > 0)
-    
     let lowestPrice = 0
     let highestPrice = 0
     let averagePrice = 0
@@ -291,28 +233,19 @@ export default function UnifiedListingsDisplay({
         lowestPrice = Math.min(...validPrices)
         highestPrice = Math.max(...validPrices)
         
-        // As requested: find the true average between the lowest and highest price across both platforms
         let baseAveragePrice = Math.round((lowestPrice + highestPrice) / 2)
         averagePrice = baseAveragePrice
 
-        // Adjust average price based on region
-        // If East Malaysia, add 5% to the average price
-        // If Langkawi, add 10% to the average price
-        // If West Malaysia price is same
         if (userInputs?.region === "east") {
             averagePrice = Math.round(baseAveragePrice * 1.05)
         } else if (userInputs?.region === "langkawi") {
-            // averagePrice = Math.round(baseAveragePrice * 1.1)
-            // Comment this out for now since we do not yet have actual percentage for Langkawi
             averagePrice = baseAveragePrice
         }
 
-        // Adjust average price based on condition
         if (userInputs?.condition) {
             const condition_name = userInputs.condition
             const lowPercentage = 0.1
             const highPercentage = 0.2
-
             if (condition_name === "Very Poor") { averagePrice = Math.round(averagePrice * (1 - highPercentage)) }
             else if (condition_name === "Poor") { averagePrice = Math.round(averagePrice * (1 - lowPercentage)) }
             else if (condition_name === "Good") { averagePrice = Math.round(averagePrice * (1 + lowPercentage)) }
@@ -320,60 +253,35 @@ export default function UnifiedListingsDisplay({
         }
     }
 
-    // Price summary component
     const PriceSummary = ({ className = "" }: { className?: string }) => (
         <div className={`grid grid-cols-1 md:grid-cols-3 print:grid-cols-3 print:gap-2 gap-2 md:gap-4 ${className}`}>
-            <PriceContainer
-                title="Lowest Price"
-                price={formatPrice(lowestPrice)}
-                color="lowest"
-            />
-            <PriceContainer
-                title="Average Price"
-                price={formatPrice(averagePrice)}
-                color="average"
-            />
-            <PriceContainer
-                title="Highest Price"
-                price={formatPrice(highestPrice)}
-                color="highest"
-            />
+            <PriceContainer title="Lowest Price" price={formatPrice(lowestPrice)} color="lowest" />
+            <PriceContainer title="Average Price" price={formatPrice(averagePrice)} color="average" />
+            <PriceContainer title="Highest Price" price={formatPrice(highestPrice)} color="highest" />
         </div>
     )
 
-    // Insurable values component (right now the values are placeholders)
     const InsurableValue = ({ className = "", data }: { className?: string, data?: any }) => {
-        // If the database returns 0 or null, fallback to showing 'No Data'
         const lowest = data?.lowest || 0;
         const average = data?.average || 0;
         const highest = data?.highest || 0;
-
         return (
             <div className={`grid grid-cols-1 md:grid-cols-3 print:grid-cols-3 print:gap-2 gap-2 md:gap-4 ${className}`}>
-                <PriceContainer
-                    title="Lowest Insurable Value"
-                    price={lowest > 0 ? formatPrice(lowest) : "No Data"}
-                    color="lowest"
-                />
-                <PriceContainer
-                    title="Average Insurable Value"
-                    price={average > 0 ? formatPrice(average) : "No Data"}
-                    color="average"
-                />
-                <PriceContainer
-                    title="Highest Insurable Value"
-                    price={highest > 0 ? formatPrice(highest) : "No Data"}
-                    color="highest"
-                />
+                <PriceContainer title="Lowest Insurable Value" price={lowest > 0 ? formatPrice(lowest) : "No Data"} color="lowest" />
+                <PriceContainer title="Average Insurable Value" price={average > 0 ? formatPrice(average) : "No Data"} color="average" />
+                <PriceContainer title="Highest Insurable Value" price={highest > 0 ? formatPrice(highest) : "No Data"} color="highest" />
             </div>
         )
     }
     
     const { user } = useAuth();
     
+    // CRITICAL FIX: The entire component now structures itself so it NEVER hides the Insurable Value,
+    // regardless of whether the market scrapers found 0 cars.
     return (
         <div className="flex flex-col print:gap-2 gap-4">
-            {/* User vehicle details */}
+            
+            {/* User vehicle details - ALWAYS SHOWN */}
             {userInputs && (
                 <UserInputsDisplay
                     make={userInputs.make}
@@ -394,19 +302,7 @@ export default function UnifiedListingsDisplay({
                 />
             )}
 
-            {/* Floating price container */}
-            {shouldShowFloating && (
-                <div className={`hidden md:block print:hidden fixed top-22 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-6xl px-4 transition-all duration-300 ease-out ${isFloating
-                    ? 'animate-in slide-in-from-top-4 fade-in'
-                    : 'animate-out slide-out-to-top-4 fade-out'
-                    }`}>
-                    <div className="bg-brand-white rounded-3xl p-4 shadow-2xl border border-brand-light-grey backdrop-blur-sm">
-                        <PriceSummary className="mb-0" />
-                    </div>
-                </div>
-            )}
-
-            {/* Insurable values container */}
+            {/* Insurable values container - ALWAYS SHOWN */}
             <div className="rounded-xl border border-brand-light-grey flex flex-col gap-4 print:gap-2 p-2 print:p-2 md:p-4">
                 <div className="flex items-center gap-2">
                     <div className="p-2 rounded-lg bg-purple-100">
@@ -414,141 +310,102 @@ export default function UnifiedListingsDisplay({
                     </div>
                     <h3 className="text-lg md:text-xl font-bold text-foreground">Insurable Value</h3>
                 </div>
-                
-                {/* PASS THE DATA HERE */}
                 <InsurableValue data={insurableData} />
                 <p className="text-xs">Vehicle insurable value is based on SNK's master database.</p>
             </div>
 
-            {/* Market value container */}
-            <div ref={priceContainerRef} className="rounded-xl border border-brand-light-grey flex flex-col gap-4 print:gap-2 p-2 print:p-2 md:p-4">
-                <div className="flex items-center gap-2">
-                    <div className="p-2 rounded-lg bg-purple-100">
-                        <CircleDollarSign className="w-5 h-5 text-purple-900" />
-                    </div>
-                    <h3 className="text-lg md:text-xl font-bold text-foreground">Estimated Market Value</h3>
-                </div>
-                <PriceSummary />
-            </div>
-
-            {/* Controls Section */}
-            <div className="rounded-xl border border-brand-light-grey p-2 md:p-4 flex flex-col gap-4 print:hidden">
-                <div className="flex flex-col gap-4">
-                    {/* Price Sorting */}
-                    {displayListings.length > 1 && (
-                        <div className="flex flex-col md:flex-row items-center gap-2 md:gap-3">
-                            <div className="flex items-center gap-2">
-                                <span className="font-medium text-gray-700">View:</span>
-                            </div>
-                            <div className="flex flex-col md:flex-row gap-2">
-                                <SortButton
-                                    mode="ascending"
-                                    viewMode={viewMode}
-                                    setViewMode={setViewMode}
-                                    icon={<ArrowUp className="sm:hidden md:block w-4 h-4" />}
-                                    text="Price: Low to High"
-                                />
-                                <SortButton
-                                    mode="descending"
-                                    viewMode={viewMode}
-                                    setViewMode={setViewMode}
-                                    icon={<ArrowDown className="sm:hidden md:block w-4 h-4" />}
-                                    text="Price: High to Low"
-                                />
+            {/* CONDITIONAL MARKET DATA DISPLAY */}
+            {displayListings.length > 0 ? (
+                <>
+                    {/* Floating price container */}
+                    {shouldShowFloating && (
+                        <div className={`hidden md:block print:hidden fixed top-22 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-6xl px-4 transition-all duration-300 ease-out ${isFloating
+                            ? 'animate-in slide-in-from-top-4 fade-in'
+                            : 'animate-out slide-out-to-top-4 fade-out'
+                            }`}>
+                            <div className="bg-brand-white rounded-3xl p-4 shadow-2xl border border-brand-light-grey backdrop-blur-sm">
+                                <PriceSummary className="mb-0" />
                             </div>
                         </div>
                     )}
 
-                    {/* Source filter (only show if we have both sources) */}
-                    {/* Only show filter if user is admin and we have both sources */}
-                    {/* Defaults to all sources */}
-                    {user?.role === 'admin' && sourceCounts.mudah > 0 && sourceCounts.carlist > 0 && (
-                        <div className="flex flex-col md:flex-row items-center gap-2 md:gap-3">
-                            <span className="font-medium text-gray-700">Filter by Source:</span>
-                            <div className="flex flex-col md:flex-row gap-2">
-                                <button
-                                    onClick={() => setSourceFilter('all')}
-                                    className={`px-4 py-2 rounded-full font-medium transition-ring-color duration-200 ease-in-out ${sourceFilter === 'all'
-                                        ? 'bg-brand text-white'
-                                        : 'ring-1 ring-brand-light-grey/50 hover:ring-brand-light-grey bg-gray-100 text-brand-grey hover:bg-gray-200'
-                                        }`}
-                                >
-                                    All ({sourceCounts.total})
-                                </button>
-                                <button
-                                    onClick={() => setSourceFilter('mudah')}
-                                    className={`px-4 py-2 rounded-full font-medium transition-ring-color duration-200 ease-in-out ${sourceFilter === 'mudah'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'ring-1 ring-blue-300 hover:ring-blue-700 bg-blue-50 text-blue-700 hover:bg-blue-100'
-                                        }`}
-                                >
-                                    Mudah ({sourceCounts.mudah})
-                                </button>
-                                <button
-                                    onClick={() => setSourceFilter('carlist')}
-                                    className={`px-4 py-2 rounded-full font-medium transition-ring-color duration-200 ease-in-out ${sourceFilter === 'carlist'
-                                        ? 'bg-purple-600 text-white'
-                                        : 'ring-1 ring-purple-300 hover:ring-purple-700 bg-purple-50 text-purple-700 hover:bg-purple-100'
-                                        }`}
-                                >
-                                    Carlist ({sourceCounts.carlist})
-                                </button>
+                    {/* Market value container */}
+                    <div ref={priceContainerRef} className="rounded-xl border border-brand-light-grey flex flex-col gap-4 print:gap-2 p-2 print:p-2 md:p-4">
+                        <div className="flex items-center gap-2">
+                            <div className="p-2 rounded-lg bg-purple-100">
+                                <CircleDollarSign className="w-5 h-5 text-purple-900" />
+                            </div>
+                            <h3 className="text-lg md:text-xl font-bold text-foreground">Estimated Market Value</h3>
+                        </div>
+                        <PriceSummary />
+                    </div>
+
+                    {/* Controls Section */}
+                    <div className="rounded-xl border border-brand-light-grey p-2 md:p-4 flex flex-col gap-4 print:hidden">
+                        <div className="flex flex-col gap-4">
+                            {displayListings.length > 1 && (
+                                <div className="flex flex-col md:flex-row items-center gap-2 md:gap-3">
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-medium text-gray-700">View:</span>
+                                    </div>
+                                    <div className="flex flex-col md:flex-row gap-2">
+                                        <SortButton mode="ascending" viewMode={viewMode} setViewMode={setViewMode} icon={<ArrowUp className="sm:hidden md:block w-4 h-4" />} text="Price: Low to High" />
+                                        <SortButton mode="descending" viewMode={viewMode} setViewMode={setViewMode} icon={<ArrowDown className="sm:hidden md:block w-4 h-4" />} text="Price: High to Low" />
+                                    </div>
+                                </div>
+                            )}
+
+                            {user?.role === 'admin' && sourceCounts.mudah > 0 && sourceCounts.carlist > 0 && (
+                                <div className="flex flex-col md:flex-row items-center gap-2 md:gap-3">
+                                    <span className="font-medium text-gray-700">Filter by Source:</span>
+                                    <div className="flex flex-col md:flex-row gap-2">
+                                        <button onClick={() => setSourceFilter('all')} className={`px-4 py-2 rounded-full font-medium transition-ring-color duration-200 ease-in-out ${sourceFilter === 'all' ? 'bg-brand text-white' : 'ring-1 ring-brand-light-grey/50 hover:ring-brand-light-grey bg-gray-100 text-brand-grey hover:bg-gray-200'}`}>
+                                            All ({sourceCounts.total})
+                                        </button>
+                                        <button onClick={() => setSourceFilter('mudah')} className={`px-4 py-2 rounded-full font-medium transition-ring-color duration-200 ease-in-out ${sourceFilter === 'mudah' ? 'bg-blue-600 text-white' : 'ring-1 ring-blue-300 hover:ring-blue-700 bg-blue-50 text-blue-700 hover:bg-blue-100'}`}>
+                                            Mudah ({sourceCounts.mudah})
+                                        </button>
+                                        <button onClick={() => setSourceFilter('carlist')} className={`px-4 py-2 rounded-full font-medium transition-ring-color duration-200 ease-in-out ${sourceFilter === 'carlist' ? 'bg-purple-600 text-white' : 'ring-1 ring-purple-300 hover:ring-purple-700 bg-purple-50 text-purple-700 hover:bg-purple-100'}`}>
+                                            Carlist ({sourceCounts.carlist})
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="flex items-center justify-between">
+                                <div className="flex flex-col text-center md:text-left">
+                                    <h6 className="font-semibold text-xl md:text-2xl">
+                                        Showing {paginatedListings.length} {paginatedListings.length === 1 ? 'listing' : 'listings'} (Page {currentPage} of {totalPages})
+                                        {sourceFilter !== 'all' && ` from ${sourceFilter.charAt(0).toUpperCase() + sourceFilter.slice(1)}`}
+                                    </h6>
+                                    <p className="text-xs text-foreground/80">Please double check the listings to ensure there are no discrepancies</p>
+                                </div>
                             </div>
                         </div>
-                    )}
 
-                    {/* Title and display mode toggle */}
-                    <div className="flex items-center justify-between">
-                        <div className="flex flex-col text-center md:text-left">
-                            <h6 className="font-semibold text-xl md:text-2xl">
-                                Showing {paginatedListings.length} {paginatedListings.length === 1 ? 'listing' : 'listings'} (Page {currentPage} of {totalPages})
-                                {sourceFilter !== 'all' && ` from ${sourceFilter.charAt(0).toUpperCase() + sourceFilter.slice(1)}`}
-                            </h6>
-                            <p className="text-xs text-foreground/80">Please double check the listings to ensure there are no discrepancies</p>
-                        </div>
+                        <UnifiedGridView listings={paginatedListings} onRemove={removeListing} vehicleType={vehicleType} />
+
+                        {totalPages > 1 && (
+                            <div className="flex items-center justify-center gap-4 mt-6">
+                                <button onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage === 1} className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-all ${currentPage === 1 ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-brand text-white hover:bg-brand/90'}`}>
+                                    <ChevronLeft className="w-4 h-4" /> Previous
+                                </button>
+                                <span className="font-medium text-gray-700">Page {currentPage} of {totalPages}</span>
+                                <button onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} disabled={currentPage === totalPages} className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-all ${currentPage === totalPages ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-brand text-white hover:bg-brand/90'}`}>
+                                    Next <ChevronRight className="w-4 h-4" />
+                                </button>
+                            </div>
+                        )}
                     </div>
+                </>
+            ) : (
+                /* EMPTY MARKET STATE - SHOWN BELOW INSURABLE DATA WHEN 0 CARS FOUND */
+                <div className="rounded-xl border border-dashed border-gray-300 flex flex-col items-center justify-center p-12 text-center bg-gray-50/50 mt-4">
+                    <Car className="w-16 h-16 mx-auto text-gray-300 mb-4" />
+                    <h3 className="text-xl font-bold text-gray-700 mb-2">No Market Listings Found</h3>
+                    <p className="text-gray-500 max-w-md">There are currently no live listings on Mudah or Carlist that exactly match this specific vehicle's specifications.</p>
                 </div>
-
-                {/* All listings display (Now strictly limited to 30 items) */}
-                <UnifiedGridView
-                    listings={paginatedListings}
-                    onRemove={removeListing}
-                    vehicleType={vehicleType}
-                />
-
-                {/* Pagination Controls */}
-                {totalPages > 1 && (
-                    <div className="flex items-center justify-center gap-4 mt-6">
-                        <button
-                            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                            disabled={currentPage === 1}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-all ${currentPage === 1
-                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                : 'bg-brand text-white hover:bg-brand/90'
-                                }`}
-                        >
-                            <ChevronLeft className="w-4 h-4" />
-                            Previous
-                        </button>
-                        
-                        <span className="font-medium text-gray-700">
-                            Page {currentPage} of {totalPages}
-                        </span>
-
-                        <button
-                            onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                            disabled={currentPage === totalPages}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-all ${currentPage === totalPages
-                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                : 'bg-brand text-white hover:bg-brand/90'
-                                }`}
-                        >
-                            Next
-                            <ChevronRight className="w-4 h-4" />
-                        </button>
-                    </div>
-                )}
-            </div>
+            )}
         </div>
     )
 }

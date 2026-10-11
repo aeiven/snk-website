@@ -4,10 +4,12 @@ import asyncio
 import pandas as pd
 from uuid import uuid5, NAMESPACE_OID
 from numpy import nan
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from supabase import create_client, Client
 from dotenv import load_dotenv
+
+from api.utils.auth import require_admin
 
 load_dotenv('.env')
 
@@ -18,7 +20,8 @@ if not url or not key:
     raise RuntimeError("Supabase credentials not found in environment variables.")
 
 supabase: Client = create_client(url, key)
-router = APIRouter()
+# Every route in this file is admin-only
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 @router.post("/admin/upload-prices")
 async def upload_prices(file: UploadFile = File(...), category: str = Form(...)):

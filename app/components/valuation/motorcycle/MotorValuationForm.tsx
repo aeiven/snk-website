@@ -19,7 +19,7 @@ interface MotorValuationFormProps {
 }
 
 export function MotorValuationForm({ onSearch, onReset, loading = false, onSearchStart }: MotorValuationFormProps) {
-    const { user, refreshTokens, getAccessToken } = useAuth()
+    const { refreshTokens, getAccessToken } = useAuth()
     const [isLoading, setIsLoading] = useState(false)
     // Existing states
     const [make, setMake] = useState("")
@@ -99,11 +99,7 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
             return
         }
 
-        // Check if user has tokens
-        if (!user?.tokens_remaining || user.tokens_remaining <= 0) {
-            onSearch({ error: "No valuation tokens remaining. Tokens refresh weekly." })
-            return
-        }
+        // Token check happens on the server, which also applies the weekly refill
 
         setIsLoading(true)
         if (onSearchStart) {
