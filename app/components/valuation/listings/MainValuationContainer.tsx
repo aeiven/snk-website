@@ -100,6 +100,8 @@ interface UnifiedListingsDisplayProps {
         electricMotorWatts?: string
     }
     insurableData?: any
+    // The Current Market Valuation page shows market data only
+    showInsurable?: boolean
 }
 
 const normalizeListing = (listing: any): UnifiedListing | null => {
@@ -116,7 +118,8 @@ export default function UnifiedListingsDisplay({
     listingsDescending = [],
     vehicleType = 'car',
     userInputs,
-    insurableData
+    insurableData,
+    showInsurable = true
 }: UnifiedListingsDisplayProps) {
 
     const [removedIds, setRemovedIds] = useState<Set<string>>(new Set())
@@ -268,17 +271,19 @@ export default function UnifiedListingsDisplay({
                 />
             )}
 
-            {/* Insurable values container - ALWAYS SHOWN */}
-            <div className="rounded-xl border border-brand-light-grey flex flex-col gap-4 print:gap-2 p-2 print:p-2 md:p-4">
-                <div className="flex items-center gap-2">
-                    <div className="p-2 rounded-lg bg-purple-100">
-                        <HandCoins className="w-5 h-5 text-purple-900" />
+            {/* Insurable values container - always shown on the combined valuation page */}
+            {showInsurable && (
+                <div className="rounded-xl border border-brand-light-grey flex flex-col gap-4 print:gap-2 p-2 print:p-2 md:p-4">
+                    <div className="flex items-center gap-2">
+                        <div className="p-2 rounded-lg bg-purple-100">
+                            <HandCoins className="w-5 h-5 text-purple-900" />
+                        </div>
+                        <h3 className="text-lg md:text-xl font-bold text-foreground">Insurable Value</h3>
                     </div>
-                    <h3 className="text-lg md:text-xl font-bold text-foreground">Insurable Value</h3>
+                    <InsurableValue data={insurableData} />
+                    <p className="text-xs">Vehicle insurable value is based on SNK's master database.</p>
                 </div>
-                <InsurableValue data={insurableData} />
-                <p className="text-xs">Vehicle insurable value is based on SNK's master database.</p>
-            </div>
+            )}
 
             {/* CONDITIONAL MARKET DATA DISPLAY */}
             {displayListings.length > 0 ? (
