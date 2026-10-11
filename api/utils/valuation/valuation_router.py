@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Literal
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from supabase import create_client, Client
@@ -31,7 +31,11 @@ except ImportError:
         search_mudah = None
 
 from api.utils.error_log import log_error
-from api.utils.auth import get_current_user, use_token, get_tokens
+from api.utils.auth import get_current_user, use_token, get_tokens, is_admin
+from api.utils.listings import (
+    VehicleDetails, mudah_car_query, mudah_motorcycle_query, carlist_query,
+    filter_mudah_by_variant, from_mudah, from_carlist, for_viewer,
+)
 
 def normalize_db_model(make: str, model: str) -> List[str]:
     make_clean = make.strip().upper()
@@ -116,52 +120,55 @@ def get_variant_specs(make: str, model: str, variant: str, style: str, year: int
         raise HTTPException(status_code=500, detail=str(e))
 
 class MarketDataRequest(BaseModel):
-    vehicle_type: str = "car"
-    mudah: Optional[Dict] = None
-    carlist: Optional[Dict] = None
-    insurable: Optional[Dict] = None
+    vehicle_type: Literal["car", "motorcycle"] = "car"
+    vehicle: VehicleDetails
 
 @valuationRouter.post("/get_marketdata", summary="Unified market data endpoint. Costs 1 token per call.")
 def get_marketdata(request: MarketDataRequest, user=Depends(get_current_user)):
     tokens_after = use_token(user)
-    results, errors = {}, {}
+    v = request.vehicle
+    is_motorcycle = request.vehicle_type == "motorcycle"
+    listings, results, errors = [], {}, {}
 
-    if request.carlist and search_carlist:
+    # The source searches are built here rather than in the browser, so requests never name the sources
+    if search_mudah:
         try:
-            params = request.carlist
-            results["carlist"] = search_carlist(query=CarlistSearchQuery(**params.get("query", {})), filters=CarlistSearchFilters(**params.get("filters", {})), whitelist_attributes=params.get("whitelist_attributes"))
-        except Exception as e:
-            log_error("carlist", "search_error", str(e), request.carlist)
-            errors["carlist"] = str(e)
-            results["carlist"] = []
-
-    if request.mudah and search_mudah:
-        try:
-            params = request.mudah
-            query_model = MudahMotorQuery if request.vehicle_type == "motorcycle" else MudahCarQuery
-            mudah_listings = search_mudah(searchQuery=query_model(**params.get("searchQuery", {})), whitelist_attributes=params.get("whitelist_attributes"))
+            query = MudahMotorQuery(**mudah_motorcycle_query(v)) if is_motorcycle else MudahCarQuery(**mudah_car_query(v))
+            mudah_listings = search_mudah(searchQuery=query, whitelist_attributes=None)
             # search() returns an error response instead of a list when Mudah fails
-            results["mudah"] = mudah_listings if isinstance(mudah_listings, list) else []
+            if isinstance(mudah_listings, list):
+                if not is_motorcycle:
+                    mudah_listings = filter_mudah_by_variant(mudah_listings, v.variant)
+                listings += [from_mudah(item) for item in mudah_listings]
         except Exception as e:
-            log_error("mudah", "search_error", str(e), request.mudah)
+            log_error("mudah", "search_error", str(e), v.model_dump())
             errors["mudah"] = str(e)
-            results["mudah"] = []
 
-    if request.insurable and request.insurable.get("vehicle_detail"):
+    if search_carlist and not is_motorcycle:
         try:
-            vd = request.insurable["vehicle_detail"]
-            
+            query, filters = carlist_query(v)
+            carlist_listings = search_carlist(query=CarlistSearchQuery(**query), filters=CarlistSearchFilters(**filters), whitelist_attributes=None)
+            listings += [from_carlist(item) for item in carlist_listings]
+        except Exception as e:
+            log_error("carlist", "search_error", str(e), v.model_dump())
+            errors["carlist"] = str(e)
+
+    results["listings"] = for_viewer(listings, is_admin(user))
+
+    if not is_motorcycle and v.year:
+        try:
             query = supabase.table('vehicles').select('id')
-            
+
             # Use ilike for case-insensitive robust matching against the DB strings
-            query = query.ilike('make', str(vd.get('make', '')).strip())
-            
-            candidates = normalize_db_model(vd.get('make', ''), vd.get('model', ''))
+            db_make = v.make.replace('-', ' ').strip()
+            query = query.ilike('make', db_make)
+
+            candidates = normalize_db_model(db_make, v.model.replace('-', ' '))
             query = query.in_('model', candidates)
-            
-            if vd.get('year'): query = query.eq('year', str(vd.get('year')))
-            if vd.get('variant'): query = query.ilike('variant', str(vd.get('variant')).strip())
-            
+
+            query = query.eq('year', str(v.year))
+            if v.variant: query = query.ilike('variant', v.variant.strip())
+
             res = query.execute()
 
             if res.data:
@@ -183,10 +190,11 @@ def get_marketdata(request: MarketDataRequest, user=Depends(get_current_user)):
             else:
                 results["insurable"] = {"meta": "No vehicle found"}
         except Exception as e:
-            log_error("insurable", "db_error", str(e), request.insurable)
+            log_error("insurable", "db_error", str(e), v.model_dump())
             errors["insurable"] = str(e)
 
-    return {"results": results, "errors": errors if errors else None, "tokens_remaining": tokens_after}
+    # Error messages can contain source URLs, so only admins see them (everything is in error_logs)
+    return {"results": results, "errors": (errors or None) if is_admin(user) else None, "tokens_remaining": tokens_after}
 
 
 @valuationRouter.get('/tokens', summary="Get the current user's token count (applies the weekly refill if due).")

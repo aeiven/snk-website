@@ -70,10 +70,8 @@ export function CarValuationNew({ onSearch, onReset, loading = false, onSearchSt
     const [model, setModel] = useState("")
     const [region, setRegion] = useState("west")
 
-    const [availableMakes, setAvailableMakes] = useState<Record<string, any>>({})
-    const [availableModels, setAvailableModels] = useState<Record<string, string>>({})
-    const [carlistMakes, setCarlistMakes] = useState<Record<string, any>>({})
-    const [carlistModels, setCarlistModels] = useState<Record<string, string | null>>({})
+    const [unifiedMakes, setUnifiedMakes] = useState<string[]>([])
+    const [unifiedModels, setUnifiedModels] = useState<string[]>([])
 
     const [variantOptions, setVariantOptions] = useState<string[]>([])
     const [styleOptions, setStyleOptions] = useState<string[]>([])
@@ -114,16 +112,8 @@ export function CarValuationNew({ onSearch, onReset, loading = false, onSearchSt
             setLoadingMakes(true)
             try {
                 const API_BASE = process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '') : ''
-                const [mRes, cRes] = await Promise.allSettled([
-                    fetch(`${API_BASE}/api/mudah/all_vehicles`),
-                    fetch(`${API_BASE}/api/carlist/all_vehicles`)
-                ])
-                if (mRes.status === 'fulfilled' && mRes.value.ok) {
-                    try { setAvailableMakes(await mRes.value.json() || {}) } catch (e) {}
-                }
-                if (cRes.status === 'fulfilled' && cRes.value.ok) {
-                    try { setCarlistMakes(await cRes.value.json() || {}) } catch (e) {}
-                }
+                const res = await fetch(`${API_BASE}/api/market/makes?type=car`)
+                if (res.ok) setUnifiedMakes((await res.json()).makes || [])
             } catch (e) { console.error(e) } finally { setLoadingMakes(false) }
         }
         fetchAllMakes()
@@ -134,18 +124,9 @@ export function CarValuationNew({ onSearch, onReset, loading = false, onSearchSt
         const fetchAllModels = async () => {
             setLoadingModels(true)
             try {
-                const mk = slug(make)
                 const API_BASE = process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '') : ''
-                const [mRes, cRes] = await Promise.allSettled([
-                    fetch(`${API_BASE}/api/mudah/all_vehicles?make=${mk}`),
-                    fetch(`${API_BASE}/api/carlist/all_vehicles?make=${mk}`)
-                ])
-                if (mRes.status === 'fulfilled' && mRes.value.ok) {
-                    try { setAvailableModels(await mRes.value.json() || {}) } catch (e) {}
-                }
-                if (cRes.status === 'fulfilled' && cRes.value.ok) {
-                    try { setCarlistModels(await cRes.value.json() || {}) } catch (e) {}
-                }
+                const res = await fetch(`${API_BASE}/api/market/models?type=car&make=${encodeURIComponent(slug(make))}`)
+                if (res.ok) setUnifiedModels((await res.json()).models || [])
             } catch (e) { console.error(e) } finally { setLoadingModels(false) }
         }
         fetchAllModels()
@@ -236,9 +217,6 @@ export function CarValuationNew({ onSearch, onReset, loading = false, onSearchSt
         fetchSpecs()
     }, [make, model, selectedVariant, selectedStyle, yearFrom])
 
-    const unifiedMakes = useMemo(() => Array.from(new Set([...Object.keys(availableMakes), ...Object.keys(carlistMakes)])).sort(), [availableMakes, carlistMakes])
-    const unifiedModels = useMemo(() => Array.from(new Set([...Object.keys(availableModels).filter(k => k !== '__id__'), ...Object.keys(carlistModels)])).sort(), [availableModels, carlistModels])
-
     const resetAll = () => {
         setMake(""); setModel(""); setSelectedVariant(""); setSelectedStyle(""); setYearFrom(""); setImportStatus("")
         setFuelType(""); setTransmission(""); setSelectedCC(""); setElectricMotorWatts(""); setCondition(""); setMileageFrom(""); setInsuredPrice("")
@@ -255,54 +233,19 @@ export function CarValuationNew({ onSearch, onReset, loading = false, onSearchSt
             const accessToken = await getAccessToken()
             if (!accessToken) { onSearch({ error: "Authentication error." }); return }
 
-            const makeSlug = slug(make); const modelSlug = slug(model)
-            let carlistCondition = importStatus === 'Imported Recond' ? 'recon' : 'used'
-            const transStr = transmission.toLowerCase()
-            const mappedTrans = transStr.includes('auto') ? 'auto' : (transStr.includes('manual') ? 'manual' : undefined)
-            
-            const styleStr = selectedStyle.toLowerCase()
-            let mudahBody = 'other'; let carlistBody = selectedStyle
-            if (styleStr.includes('sedan')) { mudahBody = 'sedan'; carlistBody = 'sedan' }
-            else if (styleStr.includes('hatchback')) { mudahBody = 'hatchback'; carlistBody = 'Hatchback' }
-            else if (styleStr.includes('suv')) { mudahBody = 'suvs'; carlistBody = 'suv' }
-            else if (styleStr.includes('mpv')) { mudahBody = 'mpvs'; carlistBody = 'MPV' }
-            else if (styleStr.includes('pick') || styleStr.includes('cab')) { mudahBody = 'pick_up'; carlistBody = 'pickup' }
-
-            const mudahSearchQuery: any = { make_id: makeSlug, model_id: modelSlug, From: 0, limit: 50, sortby: 'price_asc', type: 'sell' }
-            if (yearFrom) mudahSearchQuery.mfg_year = `${yearFrom}-${yearFrom}`
-            if (fuelType) mudahSearchQuery.fueltype = fuelType
-            if (selectedStyle) mudahSearchQuery.car_type_id = mudahBody
-            if (mappedTrans) mudahSearchQuery.transmission_id = mappedTrans
-
-            const carlistQuery: any = { make: makeSlug, model: modelSlug, condition: carlistCondition }
-            if (selectedStyle) carlistQuery.body_type = carlistBody
-            if (selectedVariant) carlistQuery.variant = selectedVariant
-            
-            // CRITICAL FIX: Pass CC down so Carlist URL Builder can construct '1-5-e' instead of generic Civic page
-            if (fuelType !== 'electric' && selectedCC) {
-                carlistQuery.cc = selectedCC
-            }
-
-            const carlistFilters: any = { page_size: 50, sort: 'asc' }
-            if (yearFrom) { carlistFilters.min_year = parseInt(yearFrom); carlistFilters.max_year = parseInt(yearFrom) }
-            if (mappedTrans) carlistFilters.transmission = mappedTrans === 'auto' ? 'Automatic' : 'Manual'
-
-            const requestBody: any = { vehicle_type: 'car' }
-            requestBody.mudah = { searchQuery: mudahSearchQuery, whitelist_attributes: ['price', 'adview_url', 'image', 'variant', 'model_name'] }
-            requestBody.carlist = { query: carlistQuery, filters: carlistFilters, whitelist_attributes: ['offers.price', 'image[0].url', 'mainEntityOfPage'] }
-
-            if (make && model && yearFrom) {
-                const capacityValue = fuelType === 'electric' ? electricMotorWatts : selectedCC
-                requestBody.insurable = {
-                    vehicle_detail: {
-                        make: cleanDbString(make), 
-                        model: cleanDbString(model), 
-                        year: yearFrom,
-                        variant: selectedVariant, 
-                        style: selectedStyle, 
-                        transmission,
-                        cc: capacityValue
-                    }
+            // Only the vehicle details are sent; the server decides where to search
+            const requestBody = {
+                vehicle_type: 'car',
+                vehicle: {
+                    make: slug(make),
+                    model: slug(model),
+                    year: yearFrom || null,
+                    variant: selectedVariant || null,
+                    style: selectedStyle || null,
+                    cc: (fuelType === 'electric' ? electricMotorWatts : selectedCC) || null,
+                    transmission: transmission || null,
+                    fuel_type: fuelType || null,
+                    import_status: importStatus || null,
                 }
             }
 
@@ -320,30 +263,10 @@ export function CarValuationNew({ onSearch, onReset, loading = false, onSearchSt
             const data = await response.json()
             await refreshTokens()
             
-            const results: any[] = []
-
-            if (data.results?.mudah) {
-                let mudahListings = data.results.mudah;
-                if (selectedVariant) {
-                    const variantTokens = selectedVariant.toLowerCase().split(/[\s-]+/).filter(t => t.length > 2);
-                    if (variantTokens.length > 0) {
-                        mudahListings = mudahListings.filter((l: any) => {
-                            const textToSearch = `${l.variant || ''} ${l.model_name || ''}`.toLowerCase();
-                            return variantTokens.some(token => textToSearch.includes(token));
-                        });
-                    }
-                }
-                if (mudahListings.length > 0) results.push({ listings: mudahListings, source: 'Mudah' });
-            }
-
-            if (data.results?.carlist && data.results.carlist.length > 0) {
-                results.push({ listings: data.results.carlist, source: 'Carlist' })
-            }
-
             const insurableData = data.results?.insurable || null
             const currentUserInputs = { make, model, year: yearFrom, style: selectedStyle, variant: selectedVariant, cc: selectedCC, transmission, fuelType }
-            
-            const combinedListings = results.flatMap(r => r.listings)
+
+            const combinedListings = Array.isArray(data.results?.listings) ? data.results.listings : []
 
             onSearch({
                 listings: combinedListings,

@@ -48,10 +48,10 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
     const fetchMakes = async () => {
         setLoadingMakes(true)
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/mudah/all_motorcycles`)
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/market/makes?type=motorcycle`)
             if (response.ok) {
-                const makes = await response.json()
-                setAvailableMakes(makes)
+                const { makes = [] } = await response.json()
+                setAvailableMakes(Object.fromEntries(makes.map((m: string) => [m, m])))
             }
         } catch (e) {
             console.error('Failed to fetch motorcycle makes:', e)
@@ -63,10 +63,10 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
     // Fetch Mudah motorcycle models
     const fetchModels = async (makeSlug: string) => {
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/mudah/all_motorcycles?make=${encodeURIComponent(makeSlug)}`)
+            const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/market/models?type=motorcycle&make=${encodeURIComponent(makeSlug)}`)
             if (response.ok) {
-                const models = await response.json()
-                setAvailableModels(models || {})
+                const { models = [] } = await response.json()
+                setAvailableModels(Object.fromEntries(models.map((m: string) => [m, m])))
             }
         } catch (e) {
             console.error('Failed to fetch motorcycle models:', e)
@@ -116,29 +116,10 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
             const makeSlug = slug(make)
             const modelSlug = slug(model)
 
-            // Build Mudah motorcycle search params
-            const mudahSearchQuery: Record<string, any> = {
-                motorcycle_make_id: makeSlug,
-                motorcycle_model_id: modelSlug,
-                From: fromOffset,
-                limit,
-                sortby: 'price_asc'
-            }
-
-            const yearQuery = yearFrom ? `${yearFrom}-${yearFrom}` : ""
-            if (yearQuery) mudahSearchQuery.mfg_year = yearQuery
-
-            // Build unified request (motorcycle only uses Mudah)
+            // Only the vehicle details are sent; the server decides where to search
             const requestBody = {
                 vehicle_type: 'motorcycle',
-                mudah: {
-                    searchQuery: mudahSearchQuery,
-                    whitelist_attributes: [
-                        'model_name', 'make_name', 'condition_name', 'manufactured_year',
-                        'fueltype', 'price', 'mileage', 'transmission_name',
-                        'engine_capacity', 'car_type_name', 'adview_url', 'image', 'variant'
-                    ]
-                }
+                vehicle: { make: makeSlug, model: modelSlug, year: yearFrom || null }
             }
 
             // Call unified endpoint
@@ -163,15 +144,8 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
             // Refresh token count
             await refreshTokens()
 
-            // Process Mudah results
-            const mudahListings = Array.isArray(data.results?.mudah) ? data.results.mudah : []
-
-            // Deduplicate using adview_url
-            const listingsMap: Record<string, any> = {}
-            mudahListings.forEach((listing: any) => {
-                if (listing.adview_url) listingsMap[listing.adview_url] = listing
-            })
-            const allListings = Object.values(listingsMap)
+            // The server returns listings already de-duplicated
+            const allListings = Array.isArray(data.results?.listings) ? data.results.listings : []
             const ascending = [...allListings].sort((a: any, b: any) => a.price - b.price)
             const descending = [...allListings].sort((a: any, b: any) => b.price - a.price)
 
@@ -182,7 +156,6 @@ export function MotorValuationForm({ onSearch, onReset, loading = false, onSearc
                 make: makeSlug,
                 model: modelSlug,
                 vehicleType: 'motorcycle',
-                source: 'Mudah',
                 userInputs: {
                     make, model, region,
                     year: yearFrom, condition, insuredPrice
