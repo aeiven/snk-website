@@ -1,16 +1,18 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { ArrowDown, RotateCcw } from "lucide-react"
+import { ArrowDown, RotateCcw, Truck } from "lucide-react"
 import { useAuth } from "@/context/AuthContext"
 import SearchableSelect from "@/components/ui/SearchableSelect"
 import { Button } from "@/components/ui/ButtonComponent"
 import { scrollToElement } from "@/app/components/ui/SmoothScroll"
-import { FormSelect } from "../cars/CarValuationNew"
+import { FormSelect } from "../shared/FormSelect"
 import UnifiedListingsDisplay from "../listings/MainValuationContainer"
 import { ValuationPageShell } from "../shared/ValuationPageShell"
 import { CheckOtherPrompt } from "../shared/CheckOtherPrompt"
 import { saveResult } from "../shared/compareStore"
+import { ValuationBar } from "@/components/ui/ValuationBar"
+import { MotorcycleMarket } from "./MotorcycleMarket"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '') : ''
 
@@ -22,7 +24,8 @@ interface FilterOptions {
 }
 
 const EMPTY_OPTIONS: FilterOptions = { variants: [], body_types: [], years: [], transmissions: [] }
-const CONDITIONS = [{ value: "used", label: "Used" }, { value: "new", label: "New" }, { value: "recon", label: "Recon" }]
+// Shown as import status; the server maps each to the market source's listing conditions
+const IMPORT_STATUSES = [{ value: "imported_new", label: "Imported New" }, { value: "local_assembled", label: "Local Assembled" }, { value: "imported_recon", label: "Imported Recon" }]
 const label = (slug: string) => slug.replace(/-/g, ' ').toUpperCase()
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
@@ -31,6 +34,8 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 export function MarketValuation() {
     const { refreshTokens, getAccessToken } = useAuth()
 
+    // Vehicle type tab; the car tab is the form below
+    const [tab, setTab] = useState("car")
     const [makes, setMakes] = useState<string[]>([])
     const [models, setModels] = useState<{ value: string; label: string }[]>([])
     const [options, setOptions] = useState<FilterOptions>(EMPTY_OPTIONS)
@@ -40,7 +45,7 @@ export function MarketValuation() {
     const [variantSlug, setVariantSlug] = useState("")
     const [bodySlug, setBodySlug] = useState("")
     const [year, setYear] = useState("")
-    const [condition, setCondition] = useState("used")
+    const [importStatus, setImportStatus] = useState("local_assembled")
     const [transmission, setTransmission] = useState("")
 
     const [loadingOptions, setLoadingOptions] = useState(false)
@@ -85,7 +90,7 @@ export function MarketValuation() {
     const variantLabel = options.variants.find(v => v.slug === variantSlug)?.label || ""
     const bodyLabel = options.body_types.find(b => b.slug === bodySlug)?.label || ""
 
-    const resetAll = () => { setMake(""); setCondition("used"); setResults(null); setError(null) }
+    const resetAll = () => { setMake(""); setImportStatus("local_assembled"); setResults(null); setError(null) }
 
     const handleSubmit = async () => {
         if (!make || !model) { setError("Please select the make and model."); return }
@@ -97,7 +102,7 @@ export function MarketValuation() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
                 body: JSON.stringify({
-                    make, model, condition,
+                    make, model, import_status: importStatus,
                     variant_slug: variantSlug || null,
                     body_slug: bodySlug || null,
                     year: year ? parseInt(year) : null,
@@ -111,7 +116,7 @@ export function MarketValuation() {
             const listings: any[] = Array.isArray(data.listings) ? data.listings : []
             const userInputs = {
                 make: label(make), model: modelLabel, year, variant: variantLabel, style: bodyLabel,
-                transmission: transmission ? capitalize(transmission) : "", condition: capitalize(condition),
+                transmission: transmission ? capitalize(transmission) : "", origin: IMPORT_STATUSES.find(s => s.value === importStatus)?.label || "",
             }
             setResults({ listings, asOf: data.as_of, userInputs })
 
@@ -122,9 +127,9 @@ export function MarketValuation() {
                 saveResult({
                     kind: 'market',
                     selections: [
-                        { label: 'Make', value: userInputs.make }, { label: 'Model', value: userInputs.model },
+                        { label: 'Type', value: 'Car' }, { label: 'Make', value: userInputs.make }, { label: 'Model', value: userInputs.model },
                         { label: 'Variant', value: variantLabel }, { label: 'Body Type', value: bodyLabel },
-                        { label: 'Year', value: year }, { label: 'Condition', value: userInputs.condition },
+                        { label: 'Year', value: year }, { label: 'Import Status', value: userInputs.origin },
                     ],
                     lowest, highest, average: Math.round((lowest + highest) / 2),
                     date: data.as_of || new Date().toISOString(),
@@ -146,72 +151,88 @@ export function MarketValuation() {
 
     return (
         <ValuationPageShell title="Current Market Valuation">
-            <div className="rounded-2xl md:rounded-3xl border border-foreground/40 shadow-sm p-4 md:p-6 bg-brand-white">
-                <form className="flex flex-col gap-4" onSubmit={(e) => e.preventDefault()}>
-                    <div className="flex flex-col gap-1 pb-3 border-b-2 border-brand/20">
-                        <h3 className="text-lg font-bold text-brand">Vehicle Details</h3>
-                        <p className="text-xs">Market value is based on vehicles currently listed for sale.</p>
-                    </div>
+            <ValuationBar activeTab={tab} onTabChange={setTab} />
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            {field("*Make")}
-                            <SearchableSelect value={make} onChange={setMake} options={makes.map(m => ({ value: m, label: label(m) }))} placeholder="Select a make..." isLoading={makes.length === 0} />
-                        </div>
-                        <div>
-                            {field("*Model")}
-                            <SearchableSelect value={model} onChange={setModel} options={models} placeholder="Select a model..." disabled={!make} />
-                        </div>
-                    </div>
+            {tab === 'motorcycle' && <MotorcycleMarket />}
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div>
-                            {field("Variant", loadingOptions)}
-                            <FormSelect value={variantSlug} onChange={(e) => setVariantSlug(e.target.value)} disabled={noOptions || options.variants.length === 0} options={options.variants.map(v => ({ value: v.slug, label: v.label }))} />
-                        </div>
-                        <div>
-                            {field("Body Type", loadingOptions)}
-                            <FormSelect value={bodySlug} onChange={(e) => setBodySlug(e.target.value)} disabled={noOptions || options.body_types.length === 0} options={options.body_types.map(b => ({ value: b.slug, label: b.label }))} />
-                        </div>
-                        <div>
-                            {field("Year", loadingOptions)}
-                            <FormSelect value={year} onChange={(e) => setYear(e.target.value)} disabled={noOptions || options.years.length === 0} options={options.years} />
-                        </div>
-                        <div>
-                            {field("*Condition")}
-                            <FormSelect value={condition} onChange={(e) => setCondition(e.target.value || "used")} disabled={!model} options={CONDITIONS} />
-                        </div>
-                        <div>
-                            {field("Transmission", loadingOptions)}
-                            <FormSelect value={transmission} onChange={(e) => setTransmission(e.target.value)} disabled={noOptions || options.transmissions.length === 0} options={options.transmissions.map(t => ({ value: t, label: capitalize(t) }))} />
-                        </div>
-                    </div>
+            {tab === 'commercial' && (
+                <div className="rounded-2xl md:rounded-3xl border border-dashed border-foreground/40 p-8 md:p-12 bg-brand-white flex flex-col items-center gap-3 text-center">
+                    <Truck className="w-14 h-14 text-gray-300" />
+                    <h3 className="text-xl font-bold text-gray-700">Commercial market valuation is coming soon</h3>
+                    <p className="text-gray-500 max-w-md">In the meantime, the insurable value for commercial vehicles is available on the Insurable Value page.</p>
+                </div>
+            )}
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
-                        <Button type="button" onClick={handleSubmit} disabled={searching || loadingOptions} variant="secondary" size="sm" className="w-full text-lg md:text-xl flex justify-center gap-2">
-                            {searching ? "Searching..." : "Get Market Value"} <ArrowDown className="h-5 w-5" />
-                        </Button>
-                        <Button type="button" onClick={resetAll} variant="secondary" size="sm" className="w-full text-lg md:text-xl flex justify-center items-center gap-2">
-                            Reset <RotateCcw className="h-5 w-5" />
-                        </Button>
-                    </div>
-                    {loadingOptions && <p className="text-sm text-center text-foreground/60">Loading the options for this model. The first time a model is chosen this can take up to a minute.</p>}
-                    {searching && <p className="text-sm text-center text-foreground/60">This can take up to a minute when the listings have not been checked recently.</p>}
-                    {error && <p className="text-sm text-red-600 text-center">{error}</p>}
-                </form>
-            </div>
+            {tab === 'car' && (
+                <>
+                <div className="rounded-2xl md:rounded-3xl border border-foreground/40 shadow-sm p-4 md:p-6 bg-brand-white">
+                    <form className="flex flex-col gap-4" onSubmit={(e) => e.preventDefault()}>
+                        <div className="flex flex-col gap-1 pb-3 border-b-2 border-brand/20">
+                            <h3 className="text-lg font-bold text-brand">Vehicle Details</h3>
+                            <p className="text-xs">Market value is based on vehicles currently listed for sale.</p>
+                        </div>
 
-            <div id="results">
-                {results && (
-                    <div className="rounded-2xl md:rounded-3xl border border-foreground/40 p-4 md:p-6 bg-brand-white flex flex-col gap-4">
-                        {results.asOf && (
-                            <p className="text-xs text-brand-grey text-right">Listings as of {new Date(results.asOf).toLocaleString()}</p>
-                        )}
-                        <UnifiedListingsDisplay listings={results.listings} userInputs={results.userInputs} showInsurable={false} />
-                        <CheckOtherPrompt target="insurable" />
-                    </div>
-                )}
-            </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                {field("*Make")}
+                                <SearchableSelect value={make} onChange={setMake} options={makes.map(m => ({ value: m, label: label(m) }))} placeholder="Select a make..." isLoading={makes.length === 0} />
+                            </div>
+                            <div>
+                                {field("*Model")}
+                                <SearchableSelect value={model} onChange={setModel} options={models} placeholder="Select a model..." disabled={!make} />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                {field("Variant", loadingOptions)}
+                                <FormSelect value={variantSlug} onChange={(e) => setVariantSlug(e.target.value)} disabled={noOptions || options.variants.length === 0} options={options.variants.map(v => ({ value: v.slug, label: v.label }))} />
+                            </div>
+                            <div>
+                                {field("Body Type", loadingOptions)}
+                                <FormSelect value={bodySlug} onChange={(e) => setBodySlug(e.target.value)} disabled={noOptions || options.body_types.length === 0} options={options.body_types.map(b => ({ value: b.slug, label: b.label }))} />
+                            </div>
+                            <div>
+                                {field("Year", loadingOptions)}
+                                <FormSelect value={year} onChange={(e) => setYear(e.target.value)} disabled={noOptions || options.years.length === 0} options={options.years} />
+                            </div>
+                            <div>
+                                {field("*Import Status")}
+                                <FormSelect value={importStatus} onChange={(e) => setImportStatus(e.target.value || "local_assembled")} disabled={!model} options={IMPORT_STATUSES} />
+                            </div>
+                            <div>
+                                {field("Transmission", loadingOptions)}
+                                <FormSelect value={transmission} onChange={(e) => setTransmission(e.target.value)} disabled={noOptions || options.transmissions.length === 0} options={options.transmissions.map(t => ({ value: t, label: capitalize(t) }))} />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
+                            <Button type="button" onClick={handleSubmit} disabled={searching || loadingOptions} variant="secondary" size="sm" className="w-full text-lg md:text-xl flex justify-center gap-2">
+                                {searching ? "Searching..." : "Get Market Value"} <ArrowDown className="h-5 w-5" />
+                            </Button>
+                            <Button type="button" onClick={resetAll} variant="secondary" size="sm" className="w-full text-lg md:text-xl flex justify-center items-center gap-2">
+                                Reset <RotateCcw className="h-5 w-5" />
+                            </Button>
+                        </div>
+                        {loadingOptions && <p className="text-sm text-center text-foreground/60">Loading the options for this model. The first time a model is chosen this can take up to a minute.</p>}
+                        {searching && <p className="text-sm text-center text-foreground/60">This can take up to a minute when the listings have not been checked recently.</p>}
+                        {error && <p className="text-sm text-red-600 text-center">{error}</p>}
+                    </form>
+                </div>
+
+                <div id="results">
+                    {results && (
+                        <div className="rounded-2xl md:rounded-3xl border border-foreground/40 p-4 md:p-6 bg-brand-white flex flex-col gap-4">
+                            {results.asOf && (
+                                <p className="text-xs text-brand-grey text-right">Listings as of {new Date(results.asOf).toLocaleString()}</p>
+                            )}
+                            <UnifiedListingsDisplay listings={results.listings} userInputs={results.userInputs} showInsurable={false} />
+                            <CheckOtherPrompt target="insurable" />
+                        </div>
+                    )}
+                </div>
+                </>
+            )}
         </ValuationPageShell>
     )
 }
