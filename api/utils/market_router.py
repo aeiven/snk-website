@@ -1,9 +1,9 @@
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.utils.auth import get_current_user
-from api.utils.carlist.carlist_router import VEHICLE_MAP as CARLIST_CARS, get_menu
+from api.utils.carlist.carlist_router import VEHICLE_MAP as CARLIST_CARS, get_menu, get_years
 from api.utils.mudah.mudah_router import VEHICLE_MAP as MUDAH_CARS, MOTORCYCLE_MAP as MUDAH_MOTORCYCLES
 
 # Neutral make/model lists for the dropdowns, merged from all sources without naming them
@@ -43,3 +43,21 @@ def market_menu(path: str = "", user=Depends(get_current_user)):
     if menu is None:
         raise HTTPException(status_code=503, detail="Could not load the options right now. Please try again.")
     return menu
+
+
+@marketRouter.get("/options/years")
+def market_years(
+    path: str,
+    import_status: Literal["imported_new", "local_assembled", "imported_recon"],
+    variant: Optional[str] = None,
+    body: Optional[str] = None,
+    transmission: Optional[Literal["automatic", "manual"]] = None,
+    fuel_type: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    """Years with listings for every other choice on the form. The year is chosen last, from this list."""
+    from api.utils.valuation.valuation_router import IMPORT_STATUS_CONDITIONS
+    years = get_years(path, IMPORT_STATUS_CONDITIONS[import_status], variant or None, body or None, transmission, fuel_type or None)
+    if years is None:
+        raise HTTPException(status_code=503, detail="Could not load the years right now. Please try again.")
+    return {"years": years}

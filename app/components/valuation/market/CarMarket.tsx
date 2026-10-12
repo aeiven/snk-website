@@ -54,6 +54,8 @@ export function CarMarket() {
     const [transmission, setTransmission] = useState("")
     const [fuelType, setFuelType] = useState("")
     const [importStatus, setImportStatus] = useState("local_assembled")
+    // Years with listings for every other choice; loaded only once all of them are chosen
+    const [years, setYears] = useState<string[] | null>(null)
 
     const [loadingStep, setLoadingStep] = useState<string | null>(null)
     const [searching, setSearching] = useState(false)
@@ -115,9 +117,48 @@ export function CarMarket() {
             setMenu(m)
             if (m.variants.length === 1) setVariantSlug(m.variants[0].slug)
             if (m.body_types.length === 1) setBodySlug(m.body_types[0].slug)
+            if (m.transmissions.length === 1) setTransmission(m.transmissions[0])
         })
         return () => { current = false }
     }, [model])
+
+    // Year is chosen last: every other choice that has options must be made first
+    const yearReady = !!model && loadingStep !== "details"
+        && (menu.variants.length === 0 || !!variantSlug)
+        && (menu.body_types.length === 0 || !!bodySlug)
+        && (menu.transmissions.length === 0 || !!transmission)
+        && (menu.fuel_types.length <= 1 || !!fuelType)
+
+    // Any change above clears the year, then loads the years that have listings for the new choices
+    useEffect(() => {
+        setYear(""); setYears(null)
+        if (!yearReady) return
+        let current = true
+        ;(async () => {
+            setLoadingStep("year")
+            try {
+                const accessToken = await getAccessToken()
+                const params = new URLSearchParams({ path: model, import_status: importStatus })
+                if (variantSlug) params.set("variant", variantSlug)
+                if (bodySlug) params.set("body", bodySlug)
+                if (transmission) params.set("transmission", transmission)
+                if (fuelType) params.set("fuel_type", fuelType)
+                const res = await fetch(`${API_BASE}/api/market/options/years?${params}`, {
+                    headers: { 'Authorization': `Bearer ${accessToken}` },
+                })
+                const data = await res.json().catch(() => null)
+                if (!current) return
+                if (!res.ok) { setError(data?.detail || "Could not load the years. Please try again."); return }
+                setError(null)
+                setYears(Array.isArray(data?.years) ? data.years : [])
+            } catch {
+                if (current) setError("Could not load the years. Please try again.")
+            } finally {
+                if (current) setLoadingStep(null)
+            }
+        })()
+        return () => { current = false; setLoadingStep(prev => prev === "year" ? null : prev) }
+    }, [yearReady, model, variantSlug, bodySlug, transmission, fuelType, importStatus])
 
     const makeLabel = labelOf(makes, make).toUpperCase()
     const groupLabel = labelOf(groups, group).toUpperCase()
@@ -130,6 +171,8 @@ export function CarMarket() {
 
     const handleSubmit = async () => {
         if (!model) { setError("Please select the make and model."); return }
+        if (!yearReady) { setError("Please choose all the details above first."); return }
+        if (!year) { setError("Please select the year."); return }
         setSearching(true); setError(null); setResults(null)
         try {
             const accessToken = await getAccessToken()
@@ -142,7 +185,7 @@ export function CarMarket() {
                     import_status: importStatus,
                     variant_slug: variantSlug || null,
                     body_slug: bodySlug || null,
-                    year: year ? parseInt(year) : null,
+                    year: parseInt(year),
                     transmission: transmission || null,
                     fuel_type: fuelType || null,
                 }),
@@ -216,32 +259,35 @@ export function CarMarket() {
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
-                            {field("Variant", loadingStep === "details")}
+                            {field(menu.variants.length > 0 ? "*Variant" : "Variant", loadingStep === "details")}
                             <FormSelect value={variantSlug} onChange={(e) => setVariantSlug(e.target.value)} disabled={detailsDisabled || menu.variants.length === 0} options={byLabel(menu.variants).map(v => ({ value: v.slug, label: v.label }))} />
                         </div>
                         <div>
-                            {field("Body Type", loadingStep === "details")}
+                            {field(menu.body_types.length > 0 ? "*Body Type" : "Body Type", loadingStep === "details")}
                             <FormSelect value={bodySlug} onChange={(e) => setBodySlug(e.target.value)} disabled={detailsDisabled || menu.body_types.length === 0} options={byLabel(menu.body_types).map(b => ({ value: b.slug, label: b.label }))} />
-                        </div>
-                        <div>
-                            {field("Year", loadingStep === "details")}
-                            <FormSelect value={year} onChange={(e) => setYear(e.target.value)} disabled={detailsDisabled || menu.years.length === 0} options={menu.years} />
                         </div>
                         <div>
                             {field("*Import Status")}
                             <FormSelect value={importStatus} onChange={(e) => setImportStatus(e.target.value || "local_assembled")} disabled={!model} options={IMPORT_STATUSES} />
                         </div>
                         <div>
-                            {field("Transmission", loadingStep === "details")}
+                            {field(menu.transmissions.length > 0 ? "*Transmission" : "Transmission", loadingStep === "details")}
                             <FormSelect value={transmission} onChange={(e) => setTransmission(e.target.value)} disabled={detailsDisabled || menu.transmissions.length === 0} options={menu.transmissions.map(t => ({ value: t, label: capitalize(t) }))} />
                         </div>
                         {/* Only shown when the market source has more than one fuel type for this model */}
                         {menu.fuel_types.length > 1 && (
                             <div>
-                                {field("Fuel Type")}
+                                {field("*Fuel Type")}
                                 <FormSelect value={fuelType} onChange={(e) => setFuelType(e.target.value)} disabled={detailsDisabled} options={menu.fuel_types} />
                             </div>
                         )}
+                        {/* Chosen last, and only from years that have listings for everything chosen above */}
+                        <div>
+                            {field("*Year", loadingStep === "year")}
+                            <FormSelect value={year} onChange={(e) => setYear(e.target.value)} disabled={!years || years.length === 0 || loadingStep === "year"} options={years || []} />
+                            {!yearReady && model && <p className="text-xs text-foreground/60 mt-1 ml-1">Choose all the details above first.</p>}
+                            {years && years.length === 0 && <p className="text-xs text-red-600 mt-1 ml-1">No listings for these choices. Try changing one of them.</p>}
+                        </div>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
