@@ -485,14 +485,47 @@ def get_menu(path: str = "") -> Optional[dict]:
         log_error("cache", "db_error", f"Saving {OPTIONS_TABLE}: {e}", {"path": path})
     return menus
 
-# Years change as cars are listed and sold, so the year list for a full set of choices is kept for less time
-YEARS_FRESH_DAYS = 7
+# Choices change which cars are listed, so the narrowed menus for a set of choices are kept for less time
+FILTERED_FRESH_DAYS = 7
 FILTER_SLUG = re.compile(r"^[A-Za-z0-9\-]+$")
+FILTERED_KEYS = ("years", "body_types", "transmissions", "fuel_types")
 
-def get_years(path: str, conditions: list[str], variant_slug: Optional[str] = None, body_slug: Optional[str] = None,
-              transmission: Optional[str] = None, fuel_type: Optional[str] = None) -> Optional[list[str]]:
-    """Years that have listings for exactly these choices, read from Carlist's own year menu on the page
-    the search will use (one page per condition, e.g. new + used). Saved for YEARS_FRESH_DAYS."""
+def _filtered_page(path: str, condition: str, variant_slug, body_slug, transmission, fuel_type) -> Optional[dict]:
+    """Carlist's menus on one condition's listing page with these choices applied. Saved for FILTERED_FRESH_DAYS."""
+    make, _, rest = path.partition("/")
+    # Saved in the same table as the model menus, under a key that includes every choice
+    key = f"{rest}|filtered|{condition}|{variant_slug or ''}|{body_slug or ''}|{transmission or ''}|{fuel_type or ''}"
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=FILTERED_FRESH_DAYS)).isoformat()
+    try:
+        res = execute(lambda: supabase.table(OPTIONS_TABLE).select("options").eq("make", make).eq("model", key).gte("fetched_at", cutoff).limit(1))
+        if res.data and res.data[0]["options"].get("version") == OPTIONS_VERSION:
+            return res.data[0]["options"]
+    except Exception as e:
+        log_error("cache", "db_error", f"Reading {OPTIONS_TABLE}: {e}", {"path": path, "key": key})
+
+    segments = "".join(f"{s}/" for s in (variant_slug, body_slug) if s)
+    params = "&".join(f"{k}={v}" for k, v in (("transmission", transmission), ("fuel_type", fuel_type)) if v)
+    url = f"https://www.carlist.my/{condition}-cars-for-sale/{path}/{segments}malaysia" + (f"?{params}" if params else "")
+    print(f"Fetching Carlist filtered menus: {url}")
+    tree = fetch_page(url, timeout=90)
+    if tree is None:
+        return None
+    menus = parse_menus(tree)
+    # No years means no listings for these choices, so the other menus on that page don't apply
+    page = {"version": OPTIONS_VERSION, **({k: menus[k] for k in FILTERED_KEYS} if menus["years"] else {k: [] for k in FILTERED_KEYS})}
+    try:
+        execute(lambda: supabase.table(OPTIONS_TABLE).upsert(
+            {"make": make, "model": key, "options": page, "fetched_at": datetime.now(timezone.utc).isoformat()},
+            on_conflict="make,model",
+        ))
+    except Exception as e:
+        log_error("cache", "db_error", f"Saving {OPTIONS_TABLE}: {e}", {"path": path, "key": key})
+    return page
+
+def get_filtered(path: str, conditions: list[str], variant_slug: Optional[str] = None, body_slug: Optional[str] = None,
+                 transmission: Optional[str] = None, fuel_type: Optional[str] = None) -> Optional[dict]:
+    """Years, body types, transmissions and fuel types that have listings for exactly these choices, read from
+    Carlist's own menus on the pages the search will use (one page per condition, e.g. new + used)."""
     path = path.strip("/").lower()
     if not CARLIST_PATH.match(path) or "/" not in path:
         return None
@@ -501,43 +534,28 @@ def get_years(path: str, conditions: list[str], variant_slug: Optional[str] = No
     if transmission not in (None, "automatic", "manual"):
         return None
 
-    make, _, rest = path.partition("/")
-    # Saved in the same table as the menus, under a key that includes every choice
-    key = f"{rest}|years|{','.join(sorted(conditions))}|{variant_slug or ''}|{body_slug or ''}|{transmission or ''}|{fuel_type or ''}"
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=YEARS_FRESH_DAYS)).isoformat()
-    try:
-        res = execute(lambda: supabase.table(OPTIONS_TABLE).select("options").eq("make", make).eq("model", key).gte("fetched_at", cutoff).limit(1))
-        if res.data and res.data[0]["options"].get("version") == OPTIONS_VERSION:
-            return res.data[0]["options"]["years"]
-    except Exception as e:
-        log_error("cache", "db_error", f"Reading {OPTIONS_TABLE}: {e}", {"path": path, "key": key})
-
-    segments = "".join(f"{s}/" for s in (variant_slug, body_slug) if s)
-    params = "&".join(f"{k}={v}" for k, v in (("transmission", transmission), ("fuel_type", fuel_type)) if v)
-    urls = [f"https://www.carlist.my/{c}-cars-for-sale/{path}/{segments}malaysia" + (f"?{params}" if params else "") for c in conditions]
-
-    print(f"Fetching Carlist years: {urls}")
-    years, failed = set(), False
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(urls)) as executor:
-        for tree in executor.map(lambda u: fetch_page(u, timeout=90), urls):
-            if tree is None:
-                failed = True
-                continue
-            years.update(parse_menus(tree)["years"])
-    if failed and not years:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(conditions)) as executor:
+        pages = list(executor.map(lambda c: _filtered_page(path, c, variant_slug, body_slug, transmission, fuel_type), conditions))
+    found = [p for p in pages if p is not None]
+    if not found:
         return None
-    result = sorted(years, reverse=True)
 
-    # Don't save a list that may be missing years because one of the pages failed
-    if not failed:
-        try:
-            execute(lambda: supabase.table(OPTIONS_TABLE).upsert(
-                {"make": make, "model": key, "options": {"version": OPTIONS_VERSION, "years": result}, "fetched_at": datetime.now(timezone.utc).isoformat()},
-                on_conflict="make,model",
-            ))
-        except Exception as e:
-            log_error("cache", "db_error", f"Saving {OPTIONS_TABLE}: {e}", {"path": path, "key": key})
-    return result
+    def merge(key, id_field=None):
+        out, seen = [], set()
+        for p in found:
+            for item in p[key]:
+                ident = item[id_field] if id_field else item
+                if ident not in seen:
+                    seen.add(ident)
+                    out.append(item)
+        return out
+
+    return {
+        "years": sorted(merge("years"), reverse=True),
+        "body_types": merge("body_types", "slug"),
+        "transmissions": merge("transmissions"),
+        "fuel_types": merge("fuel_types"),
+    }
 
 @carlistRouter.get('/all_vehicles', dependencies=[Depends(require_admin)])
 def vehicle_map(make: str = None):
