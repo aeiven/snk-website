@@ -59,10 +59,15 @@ CATEGORIES = {
     "commercial": ["LIGHT", "light", "HEAVY", "heavy"],
 }
 
+def make_pattern(make: str) -> str:
+    """Case-insensitive match where a dash and a space count as the same, so 'MERCEDES-BENZ',
+    'Mercedes Benz' and 'HARLEY-DAVIDSON' all find the rows saved in the database."""
+    return re.sub(r"[-\s]+", "_", make.strip())
+
 def vehicles_query(columns: str, make: str, model: str, category: Optional[str] = None):
     """vehicles rows for a make/model, limited to one tab's categories when given."""
     # Only vehicles in the current list (older rows replaced by a newer upload are marked inactive)
-    query = supabase.table("vehicles").select(columns).eq("active", True).ilike("make", make.replace("-", " ").strip()).in_("model", normalize_db_model(make, model))
+    query = supabase.table("vehicles").select(columns).eq("active", True).ilike("make", make_pattern(make)).in_("model", normalize_db_model(make, model))
     return query.in_("category", CATEGORIES[category]) if category in CATEGORIES else query
 
 @valuationRouter.get('/options/variants')
@@ -184,12 +189,8 @@ def lookup_insurable(v: VehicleDetails) -> dict:
     """Lowest / average / highest insurable value across all matching rows in our database."""
     query = supabase.table('vehicles').select('id').eq('active', True)
 
-    # Use ilike for case-insensitive robust matching against the DB strings
-    db_make = v.make.replace('-', ' ').strip()
-    query = query.ilike('make', db_make)
-
-    candidates = normalize_db_model(db_make, v.model.replace('-', ' '))
-    query = query.in_('model', candidates)
+    # Same make and model matching as the dropdowns (vehicles_query), so every option offered can be found
+    query = query.ilike('make', make_pattern(v.make)).in_('model', normalize_db_model(v.make, v.model))
 
     query = query.eq('year', str(v.year))
     if v.variant: query = query.ilike('variant', v.variant.strip())
