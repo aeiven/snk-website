@@ -49,8 +49,15 @@ def normalize_db_model(make: str, model: str) -> List[str]:
     if no_spaces not in candidates: candidates.append(no_spaces)
     return candidates
 
-# Vehicle category values in our database for each tab on the Insurable Value page
-CATEGORIES = {"car": ["PRIVATE", "private"], "motorcycle": ["motorcycle"], "light": ["light"], "heavy": ["heavy"], "commercial": ["light", "heavy"]}
+# Vehicle category values in our database for each tab on the Insurable Value page.
+# Both spellings: older data was loaded in lowercase, the admin upload page saves UPPERCASE.
+CATEGORIES = {
+    "car": ["PRIVATE", "private"],
+    "motorcycle": ["MOTORCYCLE", "motorcycle"],
+    "light": ["LIGHT", "light"],
+    "heavy": ["HEAVY", "heavy"],
+    "commercial": ["LIGHT", "light", "HEAVY", "heavy"],
+}
 
 def vehicles_query(columns: str, make: str, model: str, category: Optional[str] = None):
     """vehicles rows for a make/model, limited to one tab's categories when given."""
