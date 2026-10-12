@@ -61,7 +61,8 @@ CATEGORIES = {
 
 def vehicles_query(columns: str, make: str, model: str, category: Optional[str] = None):
     """vehicles rows for a make/model, limited to one tab's categories when given."""
-    query = supabase.table("vehicles").select(columns).ilike("make", make.replace("-", " ").strip()).in_("model", normalize_db_model(make, model))
+    # Only vehicles in the current list (older rows replaced by a newer upload are marked inactive)
+    query = supabase.table("vehicles").select(columns).eq("active", True).ilike("make", make.replace("-", " ").strip()).in_("model", normalize_db_model(make, model))
     return query.in_("category", CATEGORIES[category]) if category in CATEGORIES else query
 
 @valuationRouter.get('/options/variants')
@@ -181,7 +182,7 @@ def get_marketdata(request: MarketDataRequest, user=Depends(get_current_user)):
 
 def lookup_insurable(v: VehicleDetails) -> dict:
     """Lowest / average / highest insurable value across all matching rows in our database."""
-    query = supabase.table('vehicles').select('id')
+    query = supabase.table('vehicles').select('id').eq('active', True)
 
     # Use ilike for case-insensitive robust matching against the DB strings
     db_make = v.make.replace('-', ' ').strip()
@@ -199,11 +200,19 @@ def lookup_insurable(v: VehicleDetails) -> dict:
         return {"meta": "No vehicle found"}
 
     vehicle_ids = [row['id'] for row in res.data]
-    val_res = supabase.table('vehicle_values').select('value').in_('vehicle_id', vehicle_ids).execute()
+    val_res = supabase.table('vehicle_values').select('vehicle_id, value, valuation_period').in_('vehicle_id', vehicle_ids).execute()
     if not val_res.data:
         return {"meta": "No vehicle values found"}
 
-    values = [float(row['value']) for row in val_res.data if row.get('value') is not None]
+    # Each vehicle can have values from several quarters; use only its latest one
+    latest = {}
+    for row in val_res.data:
+        if row.get('value') is None:
+            continue
+        current = latest.get(row['vehicle_id'])
+        if current is None or str(row['valuation_period']) > str(current['valuation_period']):
+            latest[row['vehicle_id']] = row
+    values = [float(row['value']) for row in latest.values()]
     if not values:
         return {"meta": "No valid values found"}
     return {"lowest": int(min(values)), "average": int(sum(values) / len(values)), "highest": int(max(values))}
