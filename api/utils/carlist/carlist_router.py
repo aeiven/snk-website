@@ -298,6 +298,11 @@ def strict_match(item: dict, query: SearchQuery, filters: SearchFilters) -> bool
             return False
     return True
 
+def listing_id(item: dict) -> str:
+    """'https://www.carlist.my/used-cars-for-sale/...?sort=price.asc#listing_18907179' -> 'listing_18907179'"""
+    url = item.get("url") or ""
+    return url.rsplit("#", 1)[-1] if "#" in url else url
+
 def find_listings(query: SearchQuery, filters: SearchFilters):
     """Returns (matching raw listings, when they were scraped as an ISO date string).
     Uses a saved result from the last 7 days when there is one, otherwise scrapes."""
@@ -318,14 +323,18 @@ def find_listings(query: SearchQuery, filters: SearchFilters):
             broad_query = query.model_copy(update={"variant": None})
             cheapest_listings, priciest_listings = scrape_low_and_high(broad_query, filters)
 
-        all_listings = (cheapest_listings or []) + (priciest_listings or [])
-        unique_listings = list({item.get('url'): item for item in all_listings if item.get('url')}.values())
+        unique_listings = [item for item in (cheapest_listings or []) + (priciest_listings or []) if item.get('url')]
 
         # Only save real results: a failed or empty scrape should be retried by the next search.
         if unique_listings:
             market_cache.save(CACHE_TABLE, search_key, vehicle_key(inputs), SCRAPER_VERSION, inputs, unique_listings)
         elif cheapest_listings is None and priciest_listings is None:
             log_error("carlist", "scrape_failed", "Both price pages failed", inputs)
+
+    # A listing on both the cheapest and priciest page must count once. Its url is the page address plus
+    # "#listing_<id>", and the page address differs by sort order, so compare the listing id.
+    # Done after loading too, because results saved before this fix contain such pairs.
+    unique_listings = list({listing_id(item): item for item in unique_listings}.values())
 
     filtered_listings = []
     for item in unique_listings:
