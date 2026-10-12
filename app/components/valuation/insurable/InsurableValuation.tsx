@@ -13,7 +13,7 @@ import { CheckOtherPrompt } from "../shared/CheckOtherPrompt"
 import { saveResult } from "../shared/compareStore"
 import { ValuationBar } from "@/components/ui/ValuationBar"
 
-const TAB_LABELS: Record<string, string> = { car: "Car", motorcycle: "Motorcycle", commercial: "Commercial" }
+const TAB_LABELS: Record<string, string> = { car: "Car", motorcycle: "Motorcycle", light: "Light Commercial", heavy: "Heavy Commercial" }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '') : ''
 
@@ -32,8 +32,10 @@ interface InsurableResult {
 export function InsurableValuation() {
     const { refreshTokens, getAccessToken } = useAuth()
 
-    // Vehicle type tab: car / motorcycle / commercial (matches the vehicle categories in our database)
-    const [category, setCategory] = useState("car")
+    // Vehicle type tab; commercial vehicles are split into light and heavy in our database, so the user picks one
+    const [tab, setTab] = useState("car")
+    const [weight, setWeight] = useState("")
+    const category = tab === "commercial" ? weight : tab
     const [makes, setMakes] = useState<string[]>([])
     const [models, setModels] = useState<string[]>([])
     const [variants, setVariants] = useState<string[]>([])
@@ -59,6 +61,7 @@ export function InsurableValuation() {
 
     useEffect(() => {
         setMakes([]); setMake(""); setResult(null); setError(null)
+        if (!category) return
         getJson(`/api/valuation/options/makes?${q({})}`).then(d => setMakes(d?.makes || []))
     }, [category])
 
@@ -152,7 +155,27 @@ export function InsurableValuation() {
 
     return (
         <ValuationPageShell title="Insurable Value">
-            <ValuationBar activeTab={category} onTabChange={setCategory} />
+            <ValuationBar activeTab={tab} onTabChange={(t) => { setTab(t); setWeight("") }} />
+
+            {tab === "commercial" && (
+                <div className="rounded-2xl md:rounded-3xl border border-foreground/40 shadow-sm p-4 bg-brand-white flex flex-col gap-3">
+                    <p className="text-center font-medium text-brand">Select the commercial vehicle class</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-4">
+                        {["light", "heavy"].map(w => (
+                            <button
+                                key={w}
+                                type="button"
+                                onClick={() => setWeight(w)}
+                                className={`rounded-full py-2 font-semibold transition-colors ${weight === w ? "bg-brand text-brand-white" : "border border-brand/40 text-brand hover:bg-brand/10"}`}
+                            >
+                                {TAB_LABELS[w]}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {category && (<>
             <div className="rounded-2xl md:rounded-3xl border border-foreground/40 shadow-sm p-4 md:p-6 bg-brand-white">
                 <form className="flex flex-col gap-4" onSubmit={(e) => e.preventDefault()}>
                     <div className="flex flex-col gap-1 pb-3 border-b-2 border-brand/20">
@@ -231,6 +254,7 @@ export function InsurableValuation() {
                     </div>
                 )}
             </div>
+            </>)}
         </ValuationPageShell>
     )
 }

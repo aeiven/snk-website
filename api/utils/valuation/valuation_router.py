@@ -50,7 +50,7 @@ def normalize_db_model(make: str, model: str) -> List[str]:
     return candidates
 
 # Vehicle category values in our database for each tab on the Insurable Value page
-CATEGORIES = {"car": ["PRIVATE", "private"], "motorcycle": ["motorcycle"], "commercial": ["light", "heavy"]}
+CATEGORIES = {"car": ["PRIVATE", "private"], "motorcycle": ["motorcycle"], "light": ["light"], "heavy": ["heavy"], "commercial": ["light", "heavy"]}
 
 def vehicles_query(columns: str, make: str, model: str, category: Optional[str] = None):
     """vehicles rows for a make/model, limited to one tab's categories when given."""
@@ -249,23 +249,30 @@ IMPORT_STATUS_CONDITIONS = {
 
 
 class MarketSearch(BaseModel):
-    make: str
-    model: str
+    # Carlist's own path for the chosen model, e.g. "honda/civic" or "bmw/1-series/118i"
+    path: str
     import_status: Literal["imported_new", "local_assembled", "imported_recon"] = "local_assembled"
     variant_slug: Optional[str] = None
     body_slug: Optional[str] = None
     year: Optional[int] = None
     transmission: Optional[Literal["automatic", "manual"]] = None
+    fuel_type: Optional[str] = None
 
 
 @valuationRouter.post("/market", summary="Current market listings. Costs 1 token per call.")
 def market(search: MarketSearch, user=Depends(get_current_user)):
+    segments = search.path.strip("/").lower().split("/")
+    if len(segments) < 2:
+        raise HTTPException(status_code=400, detail="Please select a model.")
+    for slug_value in (search.variant_slug, search.body_slug):
+        if slug_value and not re.fullmatch(r"[A-Za-z0-9\-]+", slug_value):
+            raise HTTPException(status_code=400, detail="Invalid option.")
     queries = [
-        CarlistSearchQuery(make=search.make, model=search.model, condition=condition,
+        CarlistSearchQuery(make=segments[0], model=segments[-1], path="/".join(segments), condition=condition,
                            variant_slug=search.variant_slug, body_slug=search.body_slug)
         for condition in IMPORT_STATUS_CONDITIONS[search.import_status]
     ]
-    filters = CarlistSearchFilters(min_year=search.year, max_year=search.year, transmission=search.transmission)
+    filters = CarlistSearchFilters(min_year=search.year, max_year=search.year, transmission=search.transmission, fuel_type=search.fuel_type)
     tokens_after = use_token(user)
 
     items, dates = [], []
